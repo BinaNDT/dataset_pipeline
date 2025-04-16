@@ -7,9 +7,14 @@ from labelbox import Client, OntologyBuilder
 from labelbox.schema.bulk_import_request import BulkImportRequest
 from labelbox.schema.enums import DataRowState
 import sys
+import datetime
 
 sys.path.append(str(Path(__file__).parent))
 from config import *
+
+# Debug mode will limit uploads
+DEBUG_MODE = True
+DEBUG_UPLOAD_LIMIT = 10  # Max images to upload in debug mode
 
 def setup_logging():
     logging.basicConfig(
@@ -49,6 +54,11 @@ def create_labelbox_annotations(predictions_file: Path) -> list:
         for frame_pred in frame_predictions:
             image_path = frame_pred['image_path']
             
+            # Skip frames with errors
+            if 'error' in frame_pred:
+                logging.warning(f"Skipping frame with error: {image_path}")
+                continue
+                
             # Create annotations for each prediction
             annotations = []
             for pred in frame_pred['predictions']:
@@ -97,15 +107,19 @@ def setup_labelbox_project() -> tuple:
     
     return client, project
 
-def upload_to_labelbox(annotations: list):
+def upload_to_labelbox(annotations: list, dataset_name: str):
     """Upload annotations to Labelbox"""
+    if not LABELBOX_API_KEY or not LABELBOX_PROJECT_ID:
+        logging.error("Labelbox API key or project ID not set")
+        return
+        
     client, project = setup_labelbox_project()
     
     # Create upload job
     upload_job = BulkImportRequest.create(
         client=client,
         project_id=LABELBOX_PROJECT_ID,
-        name=f"Building Damage Predictions {Path.cwd().name}",
+        name=dataset_name,
         attachments=annotations
     )
     
@@ -136,6 +150,14 @@ def main():
     logging.info("Converting predictions to Labelbox format...")
     labelbox_annotations = create_labelbox_annotations(predictions_file)
     
+    # Apply debug limits if needed
+    if DEBUG_MODE and len(labelbox_annotations) > DEBUG_UPLOAD_LIMIT:
+        original_count = len(labelbox_annotations)
+        labelbox_annotations = labelbox_annotations[:DEBUG_UPLOAD_LIMIT]
+        logging.warning(f"DEBUG MODE: Limiting upload to {DEBUG_UPLOAD_LIMIT} images (out of {original_count})")
+    
+    logging.info(f"Prepared {len(labelbox_annotations)} images for upload")
+    
     # Save annotations locally as backup
     backup_file = PREDICTIONS_DIR / 'labelbox_annotations.json'
     with open(backup_file, 'w') as f:
@@ -143,11 +165,19 @@ def main():
     logging.info(f"Saved backup of Labelbox annotations to {backup_file}")
     
     # Upload to Labelbox
-    if LABELBOX_API_KEY and LABELBOX_PROJECT_ID:
-        logging.info("Uploading annotations to Labelbox...")
-        upload_to_labelbox(labelbox_annotations)
+    if labelbox_annotations:
+        if LABELBOX_API_KEY and LABELBOX_PROJECT_ID:
+            # Create a unique dataset name with timestamp
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            mode_tag = "DEBUG" if DEBUG_MODE else "FULL"
+            dataset_name = f"Building_Damage_{mode_tag}_{timestamp}"
+            
+            logging.info(f"Uploading {len(labelbox_annotations)} annotations to Labelbox dataset '{dataset_name}'...")
+            upload_to_labelbox(labelbox_annotations, dataset_name)
+        else:
+            logging.warning("Labelbox API key or project ID not set. Skipping upload.")
     else:
-        logging.warning("Labelbox API key or project ID not set. Skipping upload.")
+        logging.warning("No annotations to upload. The model likely didn't detect any objects.")
 
 if __name__ == '__main__':
     main() 
