@@ -14,6 +14,8 @@ from tqdm import tqdm
 import sys
 import gc  # Add garbage collection
 from torch.amp import autocast, GradScaler  # Import mixed precision tools
+import shutil
+import glob
 
 sys.path.append(str(Path(__file__).parent))
 from config import *
@@ -25,8 +27,11 @@ USE_WANDB = False
 # Flag to enable/disable mixed precision
 USE_MIXED_PRECISION = True
 
-# Debug mode will use a tiny subset of data to quickly test the pipeline
-DEBUG_MODE = False
+# Debug mode will use a tiny subset of data and limit training
+DEBUG_MODE = True
+if DEBUG_MODE:
+    NUM_EPOCHS = 5  # Limit to just 5 epochs in debug mode
+    MAX_CHECKPOINTS = 2  # Keep only 2 checkpoints maximum
 
 def setup_logging():
     logging.basicConfig(
@@ -259,6 +264,7 @@ class Trainer:
     
     def train(self):
         best_val_loss = float('inf')
+        saved_checkpoints = []
         
         for epoch in range(NUM_EPOCHS):
             train_loss = self.train_epoch(epoch)
@@ -279,20 +285,53 @@ class Trainer:
                     best_val_loss = val_loss
                     checkpoint_path = MODEL_DIR / f"checkpoint_epoch_{epoch}.pt"
                     
-                    state_dict = self.model.module.state_dict() if self.world_size > 1 else self.model.state_dict()
+                    # Save model weights only (not optimizer state) to save space
+                    if DEBUG_MODE:
+                        state_dict = self.model.module.state_dict() if self.world_size > 1 else self.model.state_dict()
+                        
+                        torch.save({
+                            'epoch': epoch,
+                            'model_state_dict': state_dict,
+                            'val_loss': val_loss,
+                        }, checkpoint_path)
+                        
+                        logging.info(f"Saved lightweight checkpoint to {checkpoint_path}")
+                    else:
+                        # Full checkpoint for non-debug mode
+                        state_dict = self.model.module.state_dict() if self.world_size > 1 else self.model.state_dict()
+                        
+                        torch.save({
+                            'epoch': epoch,
+                            'model_state_dict': state_dict,
+                            'optimizer_state_dict': self.optimizer.state_dict(),
+                            'scheduler_state_dict': self.scheduler.state_dict(),
+                            'val_loss': val_loss,
+                        }, checkpoint_path)
+                        
+                        logging.info(f"Saved checkpoint to {checkpoint_path}")
                     
-                    torch.save({
-                        'epoch': epoch,
-                        'model_state_dict': state_dict,
-                        'optimizer_state_dict': self.optimizer.state_dict(),
-                        'scheduler_state_dict': self.scheduler.state_dict(),
-                        'val_loss': val_loss,
-                    }, checkpoint_path)
+                    # Keep track of saved checkpoints
+                    saved_checkpoints.append(checkpoint_path)
                     
-                    logging.info(f"Saved checkpoint to {checkpoint_path}")
+                    # Limit the number of checkpoints in debug mode
+                    if DEBUG_MODE and len(saved_checkpoints) > MAX_CHECKPOINTS:
+                        oldest_checkpoint = saved_checkpoints.pop(0)
+                        if oldest_checkpoint.exists():
+                            try:
+                                oldest_checkpoint.unlink()
+                                logging.info(f"Removed old checkpoint: {oldest_checkpoint}")
+                            except Exception as e:
+                                logging.warning(f"Failed to remove old checkpoint: {e}")
         
         if self.use_wandb:
             wandb.finish()
+            
+        # Print final stats
+        checkpoint_dir = MODEL_DIR
+        if checkpoint_dir.exists():
+            checkpoint_files = list(checkpoint_dir.glob("checkpoint_*.pt"))
+            total_size_gb = sum(f.stat().st_size for f in checkpoint_files) / (1024**3)
+            logging.info(f"Training complete. Total checkpoints: {len(checkpoint_files)}, Total size: {total_size_gb:.2f} GB")
 
 def main_worker(rank, world_size):
     setup(rank, world_size)

@@ -15,7 +15,7 @@ PREDICTIONS_DIR = OUTPUT_DIR / "predictions"
 LOGS_DIR = OUTPUT_DIR / "logs"
 
 # Model configuration
-NUM_CLASSES = 6  # 5 building damage classes + background
+NUM_CLASSES = 7  # Updated to match model initialization
 DEVICE = "cuda"
 NUM_GPUS = 1  # Using just 1 GPU to avoid memory conflicts
 GPU_ID = 7  # Use GPU 7 which has most available memory

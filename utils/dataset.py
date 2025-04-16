@@ -49,9 +49,9 @@ class BuildingDamageDataset(Dataset):
         # Create category id to new id mapping
         self.cat_id_map = {}
         if 'categories' in self.coco:
-            for i, cat in enumerate(self.coco['categories']):
-                # Map to index 0-5 (0 for background, 1-5 for classes)
-                # Ensure background is 0, others are 1-5
+            # Map categories to ids 1-6 (0 is background)
+            for i, cat in enumerate(self.coco['categories'], start=1):
+                # Ensure background is 0, others are 1-6
                 if cat['name'] == '__background__':
                     self.cat_id_map[cat['id']] = 0
                 else:
@@ -59,7 +59,7 @@ class BuildingDamageDataset(Dataset):
                 logging.info(f"Category mapping: {cat['id']} -> {self.cat_id_map[cat['id']]} ({cat['name']})")
         else:
             # Default mapping if no categories
-            for i in range(1, 6):
+            for i in range(1, 7):
                 self.cat_id_map[i] = i
             self.cat_id_map[0] = 0  # Background
         
@@ -168,7 +168,7 @@ class BuildingDamageDataset(Dataset):
             labels = [0]  # Background class
         
         # Convert to tensor
-        masks = torch.as_tensor(np.stack(masks), dtype=torch.uint8)
+        masks = torch.as_tensor(np.stack(masks), dtype=torch.float32)
         labels = torch.as_tensor(labels, dtype=torch.int64)
         
         # Apply transforms
@@ -232,7 +232,7 @@ def create_data_loaders(
     """Create data loaders for train, val, and test sets"""
     
     # For debugging, use a very small subset
-    debug_mode = False
+    debug_mode = True
     if debug_mode:
         max_samples = 10
         logging.warning(f"DEBUG MODE: Using only {max_samples} samples per split")
