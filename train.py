@@ -15,7 +15,7 @@ import sys
 
 sys.path.append(str(Path(__file__).parent))
 from config import *
-from utils.dataset import create_data_loaders, BuildingDamageDataset, get_transform
+from utils.dataset import create_data_loaders, BuildingDamageDataset, get_transform, custom_collate_fn
 
 # Flag to enable/disable wandb
 USE_WANDB = False
@@ -96,7 +96,8 @@ class Trainer:
             shuffle=(self.train_sampler is None),
             sampler=self.train_sampler,
             num_workers=4,
-            pin_memory=True
+            pin_memory=True,
+            collate_fn=custom_collate_fn
         )
         
         self.val_loader = torch.utils.data.DataLoader(
@@ -105,7 +106,8 @@ class Trainer:
             shuffle=False,
             sampler=self.val_sampler,
             num_workers=4,
-            pin_memory=True
+            pin_memory=True,
+            collate_fn=custom_collate_fn
         )
         
         num_training_steps = len(self.train_loader) * NUM_EPOCHS
@@ -135,6 +137,26 @@ class Trainer:
                 logging.warning(f"Failed to initialize wandb: {e}")
                 self.use_wandb = False
     
+    def process_batch(self, batch):
+        """Process batch for model input - handle variable-sized masks"""
+        # Move images to device
+        images = batch['image'].to(self.device)
+        
+        processed_batch = {
+            'pixel_values': images,
+            'mask_labels': [],
+            'class_labels': []
+        }
+        
+        # Process masks and labels (variable sized)
+        for i in range(len(batch['masks'])):
+            masks = batch['masks'][i].to(self.device)
+            labels = batch['labels'][i].to(self.device)
+            processed_batch['mask_labels'].append(masks)
+            processed_batch['class_labels'].append(labels)
+            
+        return processed_batch
+    
     def train_epoch(self, epoch):
         self.model.train()
         total_loss = 0
@@ -144,11 +166,11 @@ class Trainer:
         
         progress_bar = tqdm(self.train_loader, disable=self.rank != 0)
         for batch_idx, batch in enumerate(progress_bar):
-            # Move batch to device
-            batch = {k: v.to(self.device) for k, v in batch.items()}
+            # Process batch for variable-sized masks
+            processed_batch = self.process_batch(batch)
             
             # Forward pass
-            outputs = self.model(**batch)
+            outputs = self.model(**processed_batch)
             loss = outputs.loss
             
             # Backward pass
@@ -179,8 +201,8 @@ class Trainer:
         total_loss = 0
         
         for batch in tqdm(self.val_loader, disable=self.rank != 0):
-            batch = {k: v.to(self.device) for k, v in batch.items()}
-            outputs = self.model(**batch)
+            processed_batch = self.process_batch(batch)
+            outputs = self.model(**processed_batch)
             loss = outputs.loss
             total_loss += loss.item()
         

@@ -8,6 +8,7 @@ from torchvision import transforms
 from pycocotools import mask as mask_utils
 from typing import Dict, List, Tuple, Optional
 import sys
+import logging
 
 sys.path.append(str(Path(__file__).parent.parent))
 from config import *
@@ -61,6 +62,16 @@ class BuildingDamageDataset(Dataset):
     def __len__(self) -> int:
         return len(self.img_ids)
     
+    def polygon_to_mask(self, segmentation, height, width):
+        """Convert polygon to binary mask"""
+        import pycocotools.mask as mask_utils
+        if isinstance(segmentation, list):
+            # Convert polygon to RLE
+            rles = mask_utils.frPyObjects(segmentation, height, width)
+            rle = mask_utils.merge(rles)
+            return mask_utils.decode(rle)
+        return None
+    
     def __getitem__(self, idx: int) -> Dict:
         img_id = self.img_ids[idx]
         
@@ -69,6 +80,9 @@ class BuildingDamageDataset(Dataset):
         img_path = self.image_dir / img_info['file_name']
         image = Image.open(img_path).convert('RGB')
         
+        # Get image dimensions
+        width, height = img_info.get('width', image.width), img_info.get('height', image.height)
+        
         # Get annotations
         anns = self.img_to_anns[img_id]
         
@@ -76,10 +90,28 @@ class BuildingDamageDataset(Dataset):
         masks = []
         labels = []
         for ann in anns:
-            mask = mask_utils.decode(ann['segmentation'])
-            masks.append(mask)
-            labels.append(ann['category_id'])
-            
+            # Handle different segmentation formats
+            if 'segmentation' in ann:
+                segmentation = ann['segmentation']
+                
+                if isinstance(segmentation, dict):  # RLE format
+                    mask = mask_utils.decode(segmentation)
+                elif isinstance(segmentation, list):  # Polygon format
+                    mask = self.polygon_to_mask(segmentation, height, width)
+                else:
+                    # Skip invalid segmentation
+                    continue
+                    
+                if mask is not None:
+                    masks.append(mask)
+                    labels.append(ann['category_id'])
+                    
+        if not masks:  # Handle case with no valid masks
+            # Create a dummy mask
+            dummy_mask = np.zeros((height, width), dtype=np.uint8)
+            masks = [dummy_mask]
+            labels = [0]  # Background class
+        
         # Convert to tensor
         masks = torch.as_tensor(np.stack(masks), dtype=torch.uint8)
         labels = torch.as_tensor(labels, dtype=torch.int64)
@@ -95,11 +127,30 @@ class BuildingDamageDataset(Dataset):
             'image_id': img_id
         }
 
+def custom_collate_fn(batch):
+    """
+    Custom collate function to handle variable numbers of masks per image
+    """
+    images = torch.stack([item['image'] for item in batch])
+    image_ids = [item['image_id'] for item in batch]
+    
+    # Keep masks and labels as lists (not stacked)
+    masks = [item['masks'] for item in batch]
+    labels = [item['labels'] for item in batch]
+    
+    return {
+        'image': images,
+        'masks': masks,
+        'labels': labels,
+        'image_id': image_ids
+    }
+
 def get_transform(split: str) -> transforms.Compose:
     """Get transforms for different splits"""
     if split == "train":
         return transforms.Compose([
-            transforms.RandomResizedCrop(IMAGE_SIZE),
+            transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),  # Resize before crop to maintain aspect ratio
+            transforms.RandomCrop(IMAGE_SIZE),
             transforms.RandomHorizontalFlip(),
             transforms.ColorJitter(0.2, 0.2, 0.2),
             transforms.ToTensor(),
@@ -138,7 +189,8 @@ def create_data_loaders(
             batch_size=batch_size,
             shuffle=(split == 'train'),
             num_workers=num_workers,
-            pin_memory=True
+            pin_memory=True,
+            collate_fn=custom_collate_fn
         )
         for split, dataset in datasets.items()
     }
