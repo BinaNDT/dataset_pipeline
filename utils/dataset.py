@@ -9,6 +9,8 @@ from pycocotools import mask as mask_utils
 from typing import Dict, List, Tuple, Optional
 import sys
 import logging
+import gc
+import pandas as pd
 
 sys.path.append(str(Path(__file__).parent.parent))
 from config import *
@@ -18,7 +20,8 @@ class BuildingDamageDataset(Dataset):
                  image_dir: Path,
                  annotation_file: Path,
                  transform: Optional[transforms.Compose] = None,
-                 split: str = "train"):
+                 split: str = "train",
+                 max_samples: Optional[int] = None):
         """
         Dataset class for building damage segmentation
         Args:
@@ -26,15 +29,40 @@ class BuildingDamageDataset(Dataset):
             annotation_file: Path to COCO format annotation file
             transform: Optional transforms to apply
             split: One of ["train", "val", "test"]
+            max_samples: Optional limit on number of samples to use (for debugging)
         """
         self.image_dir = image_dir
         self.transform = transform
         self.split = split
         
         # Load annotations
+        logging.info(f"Loading annotations for {split} split...")
         with open(annotation_file, 'r') as f:
             self.coco = json.load(f)
-            
+        
+        # Load class mapping
+        if CLASS_MAPPING_FILE.exists():
+            self.class_mapping_df = pd.read_csv(CLASS_MAPPING_FILE)
+            logging.info(f"Loaded class mapping from {CLASS_MAPPING_FILE}")
+            logging.info(f"Classes: {self.class_mapping_df['class_name'].tolist()}")
+        
+        # Create category id to new id mapping
+        self.cat_id_map = {}
+        if 'categories' in self.coco:
+            for i, cat in enumerate(self.coco['categories']):
+                # Map to index 0-5 (0 for background, 1-5 for classes)
+                # Ensure background is 0, others are 1-5
+                if cat['name'] == '__background__':
+                    self.cat_id_map[cat['id']] = 0
+                else:
+                    self.cat_id_map[cat['id']] = i
+                logging.info(f"Category mapping: {cat['id']} -> {self.cat_id_map[cat['id']]} ({cat['name']})")
+        else:
+            # Default mapping if no categories
+            for i in range(1, 6):
+                self.cat_id_map[i] = i
+            self.cat_id_map[0] = 0  # Background
+        
         # Create image id to annotations mapping
         self.img_to_anns = {}
         for ann in self.coco['annotations']:
@@ -43,8 +71,11 @@ class BuildingDamageDataset(Dataset):
                 self.img_to_anns[img_id] = []
             self.img_to_anns[img_id].append(ann)
             
-        # Split dataset
+        # Get image ids with annotations
         all_img_ids = list(self.img_to_anns.keys())
+        logging.info(f"Found {len(all_img_ids)} images with annotations")
+        
+        # Split dataset
         np.random.seed(RANDOM_SEED)
         np.random.shuffle(all_img_ids)
         
@@ -59,6 +90,15 @@ class BuildingDamageDataset(Dataset):
         else:  # test
             self.img_ids = all_img_ids[n_train+n_val:]
             
+        # Limit dataset size if specified
+        if max_samples is not None:
+            self.img_ids = self.img_ids[:max_samples]
+            
+        logging.info(f"{split} split contains {len(self.img_ids)} images")
+            
+        # Create mapping from img_id to image info for faster lookup
+        self.img_id_to_info = {img['id']: img for img in self.coco['images']}
+            
     def __len__(self) -> int:
         return len(self.img_ids)
     
@@ -72,13 +112,22 @@ class BuildingDamageDataset(Dataset):
             return mask_utils.decode(rle)
         return None
     
+    def map_category_id(self, cat_id):
+        """Map original category id to model category id (0-5)"""
+        return self.cat_id_map.get(cat_id, 0)  # Default to background if not found
+    
     def __getitem__(self, idx: int) -> Dict:
         img_id = self.img_ids[idx]
         
         # Get image info and load image
-        img_info = next(img for img in self.coco['images'] if img['id'] == img_id)
+        img_info = self.img_id_to_info[img_id]
         img_path = self.image_dir / img_info['file_name']
-        image = Image.open(img_path).convert('RGB')
+        try:
+            image = Image.open(img_path).convert('RGB')
+        except Exception as e:
+            logging.error(f"Error loading image {img_path}: {e}")
+            # Return a black image as a fallback
+            image = Image.new('RGB', (IMAGE_SIZE, IMAGE_SIZE), color='black')
         
         # Get image dimensions
         width, height = img_info.get('width', image.width), img_info.get('height', image.height)
@@ -89,6 +138,10 @@ class BuildingDamageDataset(Dataset):
         # Create instance masks
         masks = []
         labels = []
+        
+        # Limit number of annotations per image to save memory (optional)
+        # anns = anns[:5]  # Uncomment to limit annotations
+        
         for ann in anns:
             # Handle different segmentation formats
             if 'segmentation' in ann:
@@ -104,7 +157,9 @@ class BuildingDamageDataset(Dataset):
                     
                 if mask is not None:
                     masks.append(mask)
-                    labels.append(ann['category_id'])
+                    # Map category id to ensure it's in range 0-5
+                    mapped_category = self.map_category_id(ann['category_id'])
+                    labels.append(mapped_category)
                     
         if not masks:  # Handle case with no valid masks
             # Create a dummy mask
@@ -119,6 +174,9 @@ class BuildingDamageDataset(Dataset):
         # Apply transforms
         if self.transform is not None:
             image = self.transform(image)
+        
+        # Clear memory
+        gc.collect()
             
         return {
             'image': image,
@@ -149,10 +207,9 @@ def get_transform(split: str) -> transforms.Compose:
     """Get transforms for different splits"""
     if split == "train":
         return transforms.Compose([
-            transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),  # Resize before crop to maintain aspect ratio
-            transforms.RandomCrop(IMAGE_SIZE),
+            transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
             transforms.RandomHorizontalFlip(),
-            transforms.ColorJitter(0.2, 0.2, 0.2),
+            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406],
                               std=[0.229, 0.224, 0.225])
@@ -169,16 +226,24 @@ def create_data_loaders(
     image_dir: Path,
     annotation_file: Path,
     batch_size: int,
-    num_workers: int = 4
+    num_workers: int = 2,
+    max_samples: Optional[int] = None
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Create data loaders for train, val, and test sets"""
+    
+    # For debugging, use a very small subset
+    debug_mode = False
+    if debug_mode:
+        max_samples = 10
+        logging.warning(f"DEBUG MODE: Using only {max_samples} samples per split")
     
     datasets = {
         split: BuildingDamageDataset(
             image_dir=image_dir,
             annotation_file=annotation_file,
             transform=get_transform(split),
-            split=split
+            split=split,
+            max_samples=max_samples
         )
         for split in ['train', 'val', 'test']
     }

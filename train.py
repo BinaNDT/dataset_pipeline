@@ -12,6 +12,8 @@ from pathlib import Path
 import logging
 from tqdm import tqdm
 import sys
+import gc  # Add garbage collection
+from torch.amp import autocast, GradScaler  # Import mixed precision tools
 
 sys.path.append(str(Path(__file__).parent))
 from config import *
@@ -19,6 +21,12 @@ from utils.dataset import create_data_loaders, BuildingDamageDataset, get_transf
 
 # Flag to enable/disable wandb
 USE_WANDB = False
+
+# Flag to enable/disable mixed precision
+USE_MIXED_PRECISION = True
+
+# Debug mode will use a tiny subset of data to quickly test the pipeline
+DEBUG_MODE = False
 
 def setup_logging():
     logging.basicConfig(
@@ -44,11 +52,17 @@ class Trainer:
         self.world_size = world_size
         self.device = torch.device(f'cuda:{rank}')
         
+        # For mixed precision training
+        self.use_mixed_precision = USE_MIXED_PRECISION
+        self.scaler = GradScaler('cuda') if self.use_mixed_precision else None
+        
         # Initialize model
+        logging.info("Initializing model...")
         config = Mask2FormerConfig.from_pretrained(
             MODEL_CHECKPOINT,
             num_labels=NUM_CLASSES,
-            num_queries=NUM_QUERIES
+            num_queries=NUM_QUERIES,
+            ignore_mismatched_sizes=True
         )
         self.model = Mask2FormerForUniversalSegmentation.from_pretrained(
             MODEL_CHECKPOINT,
@@ -67,18 +81,22 @@ class Trainer:
         )
         
         # Create datasets
+        logging.info("Loading datasets...")
+        max_samples = 20 if DEBUG_MODE else None
         self.train_dataset = BuildingDamageDataset(
             image_dir=IMAGES_DIR,
             annotation_file=ANNOTATIONS_FILE,
             transform=get_transform('train'),
-            split='train'
+            split='train',
+            max_samples=max_samples
         )
         
         self.val_dataset = BuildingDamageDataset(
             image_dir=IMAGES_DIR,
             annotation_file=ANNOTATIONS_FILE,
             transform=get_transform('val'),
-            split='val'
+            split='val',
+            max_samples=max_samples
         )
         
         # Create samplers for distributed training
@@ -90,12 +108,13 @@ class Trainer:
             self.val_sampler = None
         
         # Create data loaders with samplers
+        logging.info("Creating data loaders...")
         self.train_loader = torch.utils.data.DataLoader(
             self.train_dataset,
             batch_size=BATCH_SIZE_PER_GPU,
             shuffle=(self.train_sampler is None),
             sampler=self.train_sampler,
-            num_workers=4,
+            num_workers=2,  # Reduced to save memory
             pin_memory=True,
             collate_fn=custom_collate_fn
         )
@@ -105,7 +124,7 @@ class Trainer:
             batch_size=BATCH_SIZE_PER_GPU,
             shuffle=False,
             sampler=self.val_sampler,
-            num_workers=4,
+            num_workers=2,  # Reduced to save memory
             pin_memory=True,
             collate_fn=custom_collate_fn
         )
@@ -130,12 +149,16 @@ class Trainer:
                         "epochs": NUM_EPOCHS,
                         "batch_size": BATCH_SIZE_PER_GPU * world_size,
                         "model": MODEL_CHECKPOINT,
-                        "num_classes": NUM_CLASSES
+                        "num_classes": NUM_CLASSES,
+                        "mixed_precision": self.use_mixed_precision
                     }
                 )
             except Exception as e:
                 logging.warning(f"Failed to initialize wandb: {e}")
                 self.use_wandb = False
+                
+        logging.info(f"Using mixed precision: {self.use_mixed_precision}")
+        logging.info(f"Training on {len(self.train_dataset)} samples, validating on {len(self.val_dataset)} samples")
     
     def process_batch(self, batch):
         """Process batch for model input - handle variable-sized masks"""
@@ -166,21 +189,37 @@ class Trainer:
         
         progress_bar = tqdm(self.train_loader, disable=self.rank != 0)
         for batch_idx, batch in enumerate(progress_bar):
+            # Clear cache before processing batch
+            torch.cuda.empty_cache()
+            gc.collect()
+            
             # Process batch for variable-sized masks
             processed_batch = self.process_batch(batch)
             
-            # Forward pass
-            outputs = self.model(**processed_batch)
-            loss = outputs.loss
-            
-            # Backward pass
-            loss = loss / GRADIENT_ACCUMULATION_STEPS
-            loss.backward()
-            
-            if (batch_idx + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
-                self.optimizer.step()
-                self.scheduler.step()
-                self.optimizer.zero_grad()
+            # Forward pass with mixed precision if enabled
+            if self.use_mixed_precision:
+                with autocast('cuda'):
+                    outputs = self.model(**processed_batch)
+                    loss = outputs.loss / GRADIENT_ACCUMULATION_STEPS
+                
+                # Backward pass with scaler
+                self.scaler.scale(loss).backward()
+                
+                if (batch_idx + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                    self.scheduler.step()
+                    self.optimizer.zero_grad()
+            else:
+                # Standard precision training
+                outputs = self.model(**processed_batch)
+                loss = outputs.loss / GRADIENT_ACCUMULATION_STEPS
+                loss.backward()
+                
+                if (batch_idx + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
+                    self.optimizer.step()
+                    self.scheduler.step()
+                    self.optimizer.zero_grad()
             
             total_loss += loss.item()
             
@@ -201,9 +240,19 @@ class Trainer:
         total_loss = 0
         
         for batch in tqdm(self.val_loader, disable=self.rank != 0):
+            torch.cuda.empty_cache()
+            gc.collect()
+            
             processed_batch = self.process_batch(batch)
-            outputs = self.model(**processed_batch)
-            loss = outputs.loss
+            
+            if self.use_mixed_precision:
+                with autocast('cuda'):
+                    outputs = self.model(**processed_batch)
+                    loss = outputs.loss
+            else:
+                outputs = self.model(**processed_batch)
+                loss = outputs.loss
+                
             total_loss += loss.item()
         
         return total_loss / len(self.val_loader)
@@ -253,7 +302,22 @@ def main_worker(rank, world_size):
 
 def main():
     setup_logging()
+    
+    # Override the GPU device order to use GPU_ID first
+    if 'GPU_ID' in globals():
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(GPU_ID)
+        logging.info(f"Using GPU {GPU_ID}")
+    
     world_size = min(torch.cuda.device_count(), NUM_GPUS)
+    
+    # Print memory usage info
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            mem_info = torch.cuda.mem_get_info(i)
+            free_mem = mem_info[0] / 1024**3
+            total_mem = mem_info[1] / 1024**3
+            logging.info(f"GPU {i}: {free_mem:.2f}GB free / {total_mem:.2f}GB total")
+    
     mp.spawn(main_worker, args=(world_size,), nprocs=world_size)
 
 if __name__ == "__main__":

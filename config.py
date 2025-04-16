@@ -15,11 +15,12 @@ PREDICTIONS_DIR = OUTPUT_DIR / "predictions"
 LOGS_DIR = OUTPUT_DIR / "logs"
 
 # Model configuration
-NUM_CLASSES = 5  # background + 4 damage levels
+NUM_CLASSES = 6  # 5 building damage classes + background
 DEVICE = "cuda"
-NUM_GPUS = 2  # Reduced from 5 to 2 GPUs
-BATCH_SIZE_PER_GPU = 2
-GRADIENT_ACCUMULATION_STEPS = 4  # Increased to compensate for fewer GPUs
+NUM_GPUS = 1  # Using just 1 GPU to avoid memory conflicts
+GPU_ID = 7  # Use GPU 7 which has most available memory
+BATCH_SIZE_PER_GPU = 1  # Reduced to accommodate large images
+GRADIENT_ACCUMULATION_STEPS = 8  # Increased to maintain effective batch size
 NUM_EPOCHS = 50
 LEARNING_RATE = 1e-5
 WEIGHT_DECAY = 0.01
@@ -29,7 +30,7 @@ TRAIN_SPLIT = 0.8
 VAL_SPLIT = 0.1
 TEST_SPLIT = 0.1
 RANDOM_SEED = 42
-IMAGE_SIZE = 1024  # Resize images to this size
+IMAGE_SIZE = 512  # Reduced image size to save memory
 
 # Mask2Former specific config
 MODEL_CHECKPOINT = "facebook/mask2former-swin-large-coco-instance"
