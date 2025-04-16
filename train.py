@@ -15,7 +15,7 @@ import sys
 
 sys.path.append(str(Path(__file__).parent))
 from config import *
-from utils.dataset import create_data_loaders
+from utils.dataset import create_data_loaders, BuildingDamageDataset, get_transform
 
 def setup_logging():
     logging.basicConfig(
@@ -63,16 +63,47 @@ class Trainer:
             weight_decay=WEIGHT_DECAY
         )
         
-        # Create data loaders
-        self.train_loader, self.val_loader, _ = create_data_loaders(
-            IMAGES_DIR,
-            ANNOTATIONS_FILE,
-            BATCH_SIZE_PER_GPU
+        # Create datasets
+        self.train_dataset = BuildingDamageDataset(
+            image_dir=IMAGES_DIR,
+            annotation_file=ANNOTATIONS_FILE,
+            transform=get_transform('train'),
+            split='train'
         )
         
+        self.val_dataset = BuildingDamageDataset(
+            image_dir=IMAGES_DIR,
+            annotation_file=ANNOTATIONS_FILE,
+            transform=get_transform('val'),
+            split='val'
+        )
+        
+        # Create samplers for distributed training
         if self.world_size > 1:
-            self.train_loader.sampler = DistributedSampler(self.train_loader.dataset)
-            self.val_loader.sampler = DistributedSampler(self.val_loader.dataset)
+            self.train_sampler = DistributedSampler(self.train_dataset)
+            self.val_sampler = DistributedSampler(self.val_dataset)
+        else:
+            self.train_sampler = None
+            self.val_sampler = None
+        
+        # Create data loaders with samplers
+        self.train_loader = torch.utils.data.DataLoader(
+            self.train_dataset,
+            batch_size=BATCH_SIZE_PER_GPU,
+            shuffle=(self.train_sampler is None),
+            sampler=self.train_sampler,
+            num_workers=4,
+            pin_memory=True
+        )
+        
+        self.val_loader = torch.utils.data.DataLoader(
+            self.val_dataset,
+            batch_size=BATCH_SIZE_PER_GPU,
+            shuffle=False,
+            sampler=self.val_sampler,
+            num_workers=4,
+            pin_memory=True
+        )
         
         num_training_steps = len(self.train_loader) * NUM_EPOCHS
         num_warmup_steps = num_training_steps // 10
@@ -101,7 +132,7 @@ class Trainer:
         total_loss = 0
         
         if self.world_size > 1:
-            self.train_loader.sampler.set_epoch(epoch)
+            self.train_sampler.set_epoch(epoch)
         
         progress_bar = tqdm(self.train_loader, disable=self.rank != 0)
         for batch_idx, batch in enumerate(progress_bar):
@@ -187,7 +218,7 @@ def main_worker(rank, world_size):
 
 def main():
     setup_logging()
-    world_size = torch.cuda.device_count()
+    world_size = min(torch.cuda.device_count(), NUM_GPUS)
     mp.spawn(main_worker, args=(world_size,), nprocs=world_size)
 
 if __name__ == "__main__":
