@@ -17,6 +17,9 @@ sys.path.append(str(Path(__file__).parent))
 from config import *
 from utils.dataset import create_data_loaders, BuildingDamageDataset, get_transform
 
+# Flag to enable/disable wandb
+USE_WANDB = False
+
 def setup_logging():
     logging.basicConfig(
         level=logging.INFO,
@@ -114,18 +117,23 @@ class Trainer:
             num_training_steps=num_training_steps
         )
         
-        # Initialize WandB
-        if rank == 0:
-            wandb.init(
-                project="building-damage-segmentation",
-                config={
-                    "learning_rate": LEARNING_RATE,
-                    "epochs": NUM_EPOCHS,
-                    "batch_size": BATCH_SIZE_PER_GPU * world_size,
-                    "model": MODEL_CHECKPOINT,
-                    "num_classes": NUM_CLASSES
-                }
-            )
+        # Initialize WandB only if enabled
+        self.use_wandb = USE_WANDB and rank == 0
+        if self.use_wandb:
+            try:
+                wandb.init(
+                    project="building-damage-segmentation",
+                    config={
+                        "learning_rate": LEARNING_RATE,
+                        "epochs": NUM_EPOCHS,
+                        "batch_size": BATCH_SIZE_PER_GPU * world_size,
+                        "model": MODEL_CHECKPOINT,
+                        "num_classes": NUM_CLASSES
+                    }
+                )
+            except Exception as e:
+                logging.warning(f"Failed to initialize wandb: {e}")
+                self.use_wandb = False
     
     def train_epoch(self, epoch):
         self.model.train()
@@ -157,7 +165,7 @@ class Trainer:
             if self.rank == 0:
                 progress_bar.set_description(f"Epoch {epoch} Loss: {loss.item():.4f}")
                 
-                if batch_idx % 100 == 0:
+                if self.use_wandb and batch_idx % 100 == 0:
                     wandb.log({
                         "train_loss": loss.item(),
                         "learning_rate": self.scheduler.get_last_lr()[0]
@@ -187,11 +195,13 @@ class Trainer:
             
             if self.rank == 0:
                 logging.info(f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
-                wandb.log({
-                    "epoch": epoch,
-                    "train_loss_epoch": train_loss,
-                    "val_loss_epoch": val_loss
-                })
+                
+                if self.use_wandb:
+                    wandb.log({
+                        "epoch": epoch,
+                        "train_loss_epoch": train_loss,
+                        "val_loss_epoch": val_loss
+                    })
                 
                 # Save checkpoint if validation loss improved
                 if val_loss < best_val_loss:
@@ -209,6 +219,9 @@ class Trainer:
                     }, checkpoint_path)
                     
                     logging.info(f"Saved checkpoint to {checkpoint_path}")
+        
+        if self.use_wandb:
+            wandb.finish()
 
 def main_worker(rank, world_size):
     setup(rank, world_size)
