@@ -17,9 +17,9 @@ LOGS_DIR = OUTPUT_DIR / "logs"
 # Model configuration
 NUM_CLASSES = 5  # background + 4 damage levels
 DEVICE = "cuda"
-NUM_GPUS = 5
+NUM_GPUS = 2  # Reduced from 5 to 2 GPUs
 BATCH_SIZE_PER_GPU = 2
-GRADIENT_ACCUMULATION_STEPS = 2
+GRADIENT_ACCUMULATION_STEPS = 4  # Increased to compensate for fewer GPUs
 NUM_EPOCHS = 50
 LEARNING_RATE = 1e-5
 WEIGHT_DECAY = 0.01
