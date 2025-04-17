@@ -1,5 +1,18 @@
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables from .env file if it exists
+load_dotenv()
+
+# Debug configuration
+DEBUG = {
+    "ENABLED": os.environ.get("DEBUG_MODE", "0") == "1",  # Enable via env var or code
+    "UPLOAD_LIMIT": 10,            # Maximum items to process in debug mode
+    "LOG_LEVEL": "DEBUG",          # Logging level for debug mode
+    "VERBOSE_OUTPUT": True,        # Whether to print additional information
+    "SAVE_INTERMEDIATES": True     # Whether to save intermediate results
+}
 
 # Dataset paths
 DATASET_ROOT = Path("/data/datasets/HurricaneVidNet_Dataset")
@@ -43,10 +56,17 @@ OVERLAP_THRESHOLD = 0.5
 BATCH_SIZE_INFERENCE = 4
 
 # Labelbox configuration
-# Replace these with your actual Labelbox API key and project ID
-LABELBOX_API_KEY = os.getenv("LABELBOX_API_KEY") or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJjbTlrOXd5cm8wOWN1MDd3YjVrYmkyNWlzIiwib3JnYW5pemF0aW9uSWQiOiJjbTY4aWtxMGMwaHY3MDd5NjF6YjZkcGpoIiwiYXBpS2V5SWQiOiJjbTlrYTRuNTMwdGQ2MDd3cTZ4Mm44emRlIiwic2VjcmV0IjoiZDkzNTNhMDhlMmRiZDI0NDhlMDRiNDE4ZjM0ZDM3NjUiLCJpYXQiOjE3NDQ4Mjg5ODcsImV4cCI6MTc0NzI0ODE4N30.gnT_bby7er2sFUCe1Ed_hHsdSY1IBvLHvi0rrRUwoDE"
-LABELBOX_PROJECT_ID = os.getenv("LABELBOX_PROJECT_ID") or "cm9kigul10fk807wfeh6sccc5"  # ian_pipeline project
+LABELBOX_API_KEY = os.getenv("LABELBOX_API_KEY")
+LABELBOX_PROJECT_ID = os.getenv("LABELBOX_PROJECT_ID")
 LABELBOX_BATCH_SIZE = 50
+
+# Visualization configuration
+VISUALIZATION = {
+    "SAVE_DIR": PREDICTIONS_DIR / "visualized_annotations",
+    "HIGHLIGHT_COLOR": (0, 0, 255),  # Red highlight for annotations
+    "DEFAULT_SCALE": 1.0,            # Default scaling for annotations
+    "DEFAULT_LIMIT": 20              # Default number of images to visualize
+}
 
 # Class mapping
 CLASS_NAMES = [
@@ -63,6 +83,14 @@ CLASS_COLORS = {
     "Building-Minor-Damage": (214, 255, 50),
     "Building-Major-Damage": (255, 50, 50),
     "Building-Total-Destruction": (50, 132, 255)
+}
+
+# Error handling configuration
+ERRORS = {
+    "MAX_RETRIES": 3,            # Maximum retry attempts for operations
+    "RETRY_DELAY": 5,            # Seconds to wait between retries
+    "SKIP_FAILED_FRAMES": True,  # Whether to skip frames that fail processing
+    "LOG_EXCEPTIONS": True       # Whether to log full exception tracebacks
 }
 
 # Create necessary directories

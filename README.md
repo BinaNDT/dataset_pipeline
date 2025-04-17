@@ -7,16 +7,17 @@ A comprehensive pipeline for detecting and classifying building damage in aerial
 This pipeline automates the process of:
 1. Fine-tuning Mask2Former on custom building damage datasets
 2. Running inference on large-scale video frame collections
-3. Converting predictions to Labelbox format for human review
-4. Managing multi-GPU training and inference
+3. Converting predictions to COCO and Labelbox formats
+4. Visualizing and analyzing prediction quality
+5. Uploading results to Labelbox for human review
 
 ### Damage Classification Categories
 
 The model classifies buildings into four damage levels:
-- No Damage: Buildings with no visible structural damage
-- Minor Damage: Superficial damage, intact structural elements
-- Major Damage: Significant structural damage but partially standing
-- Total Destruction: Complete collapse or destruction
+- **No Damage**: Buildings with no visible structural damage
+- **Minor Damage**: Superficial damage, intact structural elements
+- **Major Damage**: Significant structural damage but partially standing
+- **Total Destruction**: Complete collapse or destruction
 
 ## Prerequisites
 
@@ -29,10 +30,12 @@ The model classifies buildings into four damage levels:
 - Python 3.8+
 - CUDA 11.3+
 - PyTorch 2.0+
+- OpenCV 4.5+
+- Labelbox SDK 3.0+
 
 ### Dataset Requirements
 - Images in PNG format
-- COCO format annotations
+- COCO format annotations (for training)
 - Organized in `/HurricaneVidNet_Dataset` structure
 
 ## Installation
@@ -49,191 +52,315 @@ pip install -r requirements.txt
 ```
 
 3. Set up environment variables:
+
+Copy the example environment file:
+```bash
+cp .env.example .env
+```
+
+Edit the `.env` file with your credentials:
+```
+LABELBOX_API_KEY=your_actual_api_key
+LABELBOX_PROJECT_ID=your_actual_project_id
+```
+
+Alternatively, use the provided setup script for an interactive setup:
+```bash
+./setup_env.sh
+```
+
+You can also set these environment variables directly in your shell:
 ```bash
 export LABELBOX_API_KEY="your_api_key"
 export LABELBOX_PROJECT_ID="your_project_id"
 ```
 
+For detailed security guidelines on handling credentials, see [Security Documentation](docs/security.md).
+
 ## Directory Structure
 
 ```
 dataset_pipeline/
-├── config.py                 # Configuration parameters
-├── train.py                 # Training script
-├── inference.py             # Inference script
-├── labelbox_uploader.py     # Labelbox conversion and upload
-├── utils/
-│   └── dataset.py          # Dataset utilities
-├── outputs/                 # Generated during runtime
-│   ├── models/             # Saved model checkpoints
-│   ├── predictions/        # Model predictions
-│   └── logs/              # Training and inference logs
-└── requirements.txt        # Python dependencies
+├── config.py                   # Configuration parameters
+├── train.py                    # Training script
+├── inference.py                # Inference script
+├── export_to_coco.py           # Convert predictions to COCO format
+├── labelbox_importer.py        # Unified Labelbox import functionality
+├── visualize_annotations.py    # Basic visualization of annotations
+├── fix_visualize_annotations.py # Enhanced visualization with scaling
+├── analyze_predictions.py      # Analysis of prediction statistics
+├── cleanup.py                  # Utility to clean up old model checkpoints
+├── utils/                      # Helper functions
+│   └── dataset.py              # Dataset utilities
+├── outputs/                    # Generated during runtime
+│   ├── models/                 # Saved model checkpoints
+│   ├── predictions/            # Model predictions
+│   └── logs/                   # Training and inference logs
+├── docs/                       # Documentation
+│   └── security.md             # Security guidelines
+├── tests/                      # Unit tests
+├── examples/                   # Example workflows and notebooks
+├── .github/workflows/          # CI/CD configurations
+│   └── security-checks.yml     # Security scan workflows
+├── .secrets.baseline           # Baseline for secret detection
+├── setup_env.sh                # Environment setup script
+├── .env.example                # Template for environment variables
+└── requirements.txt            # Python dependencies
 ```
 
-## Configuration
+## Complete Workflow
 
-### Key Configuration Parameters (config.py)
+### Step 1: Configure Settings
+Edit `config.py` to set up:
+- Dataset paths
+- Model parameters
+- Labelbox credentials
+- GPU configurations
 
-```python
-# GPU Configuration
-NUM_GPUS = 2                  # Number of GPUs to use
-BATCH_SIZE_PER_GPU = 2        # Batch size per GPU
-GRADIENT_ACCUMULATION_STEPS = 4  # Steps before gradient update
-
-# Training Parameters
-NUM_EPOCHS = 50
-LEARNING_RATE = 1e-5
-WEIGHT_DECAY = 0.01
-IMAGE_SIZE = 1024
-
-# Model Configuration
-MODEL_CHECKPOINT = "facebook/mask2former-swin-large-coco-instance"
-NUM_QUERIES = 100
-```
-
-### Modifying Configuration
-
-1. GPU Usage:
-   - Adjust `NUM_GPUS` based on availability
-   - Modify `BATCH_SIZE_PER_GPU` based on GPU memory
-   - Adjust `GRADIENT_ACCUMULATION_STEPS` to maintain effective batch size
-
-2. Training Parameters:
-   - Modify `NUM_EPOCHS` for longer/shorter training
-   - Adjust `LEARNING_RATE` for training stability
-   - Change `IMAGE_SIZE` based on input resolution
-
-## Usage
-
-### 1. Training
-
-Train the model on your annotated dataset:
+### Step 2: Training (Optional)
+Train the model on annotated dataset:
 
 ```bash
 python train.py
 ```
 
-Training features:
-- Multi-GPU training using DistributedDataParallel
-- Automatic mixed precision training
-- Gradient accumulation for larger effective batch sizes
-- Checkpoint saving based on validation loss
-- WandB integration for monitoring
-- Cosine learning rate scheduling with warmup
-
-Monitor training:
-- Check `outputs/logs/training.log` for progress
-- View metrics in WandB dashboard
-- Monitor GPU usage with `nvidia-smi`
-
-### 2. Inference
-
+### Step 3: Inference
 Run inference on video frames:
 
 ```bash
 python inference.py
 ```
 
-Inference features:
-- Automatic GPU distribution of workload
-- Parallel processing of multiple videos
-- Confidence thresholding for predictions
-- Structured JSON output format
+This generates `outputs/predictions/predictions.json` containing segmentation masks and classifications.
 
-### 3. Labelbox Upload
-
-Upload predictions for review:
+### Step 4: Export to COCO Format
+Convert predictions to COCO format:
 
 ```bash
-python labelbox_uploader.py
+python export_to_coco.py
 ```
 
-Features:
-- Automatic mask to polygon conversion
-- Confidence score preservation
-- Batch uploading with error recovery
-- Local backup of annotations
+This creates `outputs/predictions/predictions_coco.json` with standardized annotations.
 
-## Monitoring and Logging
+### Step 5: Visualize Results
+View the predictions with annotations:
 
-### Log Files
-- `training.log`: Training progress, losses, metrics
-- `inference.log`: Prediction progress, errors
-- `labelbox_upload.log`: Upload status, errors
-
-### GPU Monitoring
-Check GPU usage:
 ```bash
-nvidia-smi
+# Basic visualization
+python visualize_annotations.py --only-with-annotations
+
+# Enhanced visualization with scaled annotations
+python fix_visualize_annotations.py --only-with-annotations --scale 10 --highlight-border
 ```
 
-### WandB Integration
-- Real-time loss tracking
-- Learning rate monitoring
-- GPU utilization metrics
-- Model parameter logging
+### Step 6: Analyze Prediction Quality
+Check prediction statistics:
 
-## Error Handling and Recovery
+```bash
+python analyze_predictions.py
+```
 
-### Training Recovery
-- Checkpoints saved at best validation loss
-- Resume training from latest checkpoint
-- Automatic multi-GPU error handling
+### Step 7: Upload to Labelbox
+Import predictions to Labelbox for human review:
 
-### Inference Recovery
-- Per-frame error logging
-- Continued processing on errors
-- Failed frame tracking
+```bash
+# From COCO format (default)
+python labelbox_importer.py
 
-### Upload Recovery
-- Batch-wise upload verification
-- Local backup before upload
-- Error state logging
+# From raw predictions
+python labelbox_importer.py --source predictions
 
-## Performance Optimization
+# Debug mode with limited uploads
+python labelbox_importer.py --debug --limit 5
+```
 
-### GPU Memory Usage
-- Adjust `BATCH_SIZE_PER_GPU` based on available memory
-- Monitor with `nvidia-smi`
-- Use gradient accumulation for memory efficiency
+### Step 8: Clean Up (Optional)
+Manage disk space by removing old checkpoints:
 
-### Processing Speed
-- Distribute workload across available GPUs
+```bash
+# Keep only the latest checkpoint
+python cleanup.py
+
+# Keep the 3 most recent checkpoints
+python cleanup.py --keep 3
+
+# Preview what would be deleted without deleting
+python cleanup.py --dry-run
+```
+
+## Script Details
+
+### `config.py`
+Configuration file with all parameters for the pipeline:
+- Dataset paths and structure
+- Model parameters and checkpoint paths
+- Training hyperparameters
+- Labelbox credentials
+- Class definitions and color mappings
+
+### `train.py`
+Model training script with:
+- Multi-GPU support
+- Automatic mixed precision
+- Gradient accumulation
+- Checkpoint saving
+- WandB integration
+- Learning rate scheduling
+
+### `inference.py`
+Runs the model on video frames:
+- Automatic GPU distribution
 - Parallel video processing
-- Optimized data loading
+- Confidence thresholding
+- Structured JSON output
+
+### `export_to_coco.py`
+Converts model predictions to COCO format:
+- Mask to polygon conversion
+- COCO-compliant JSON structure
+- Error handling for invalid masks
+
+### `visualize_annotations.py`
+Basic visualization of annotations:
+- Renders predictions on original images
+- Supports filtering by video or image ID
+- Option to show only annotated images
+
+### `fix_visualize_annotations.py`
+Enhanced visualization with additional features:
+- Scaling option for small annotations
+- Border highlighting around annotation regions
+- Annotation-only view option
+- Better debug information
+
+### `analyze_predictions.py`
+Analyzes prediction data for quality assessment:
+- Statistics on coverage and confidence
+- Class distribution analysis
+- Size and location analysis
+- Warning for potential issues
+
+### `labelbox_importer.py`
+Unified Labelbox import with:
+- Multiple source format support (COCO, raw predictions)
+- Model-assisted labeling (MAL) import
+- Debug mode with upload limits
+- Error handling and recovery
+- Progress monitoring
+
+### `cleanup.py`
+Utility for managing disk space:
+- Removes old model checkpoint files
+- Keeps specified number of recent files
+- Provides disk space usage statistics
+- Supports dry-run mode for preview
+
+## Security Features
+
+### Environment Variable Management
+- API keys and credentials are stored in `.env` files (not committed to version control)
+- The `setup_env.sh` script provides interactive setup with proper file permissions
+- Automatic validation ensures credentials are properly configured
+
+### CI/CD Security Checks
+- GitHub Actions workflow scans for accidentally committed credentials
+- Prevents pushing `.env` files to the repository
+- Scans dependencies for known vulnerabilities
+- Ensures code follows security best practices
+
+## Debug Mode
+
+All scripts support debug mode to limit processing and provide additional logging:
+
+### Debug Flags
+
+1. **Training Debug**:
+   ```bash
+   python train.py --debug
+   ```
+   Limits to 10 training steps per epoch with extra logging.
+
+2. **Inference Debug**:
+   ```bash
+   python inference.py --debug
+   ```
+   Processes only 10 frames per video.
+
+3. **Labelbox Import Debug**:
+   ```bash
+   python labelbox_importer.py --debug --limit 5
+   ```
+   Limits uploads to 5 annotated images.
+
+4. **Visualization Debug**:
+   ```bash
+   python fix_visualize_annotations.py --debug --limit 3
+   ```
+   Processes only 3 images with extra annotation information.
+
+### Debug Output
+With debug mode enabled:
+- More verbose console output
+- Additional validation checks
+- Detailed error messages
+- Performance statistics
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. Out of Memory (OOM):
-   - Reduce `BATCH_SIZE_PER_GPU`
-   - Increase `GRADIENT_ACCUMULATION_STEPS`
-   - Reduce `IMAGE_SIZE`
+1. **Model Training Issues**:
+   - **Symptom**: Out of memory (OOM) errors
+   - **Fix**: Reduce `BATCH_SIZE_PER_GPU` or increase `GRADIENT_ACCUMULATION_STEPS`
 
-2. GPU Issues:
-   - Check GPU availability with `nvidia-smi`
-   - Verify CUDA installation
-   - Monitor GPU temperature
+2. **Inference Issues**:
+   - **Symptom**: Empty predictions
+   - **Fix**: Lower `CONFIDENCE_THRESHOLD` in config.py
+   - **Symptom**: Process hangs
+   - **Fix**: Try reducing `BATCH_SIZE_INFERENCE`
 
-3. Training Issues:
-   - Check learning rate
-   - Verify dataset loading
-   - Monitor validation loss
+3. **Visualization Issues**:
+   - **Symptom**: No annotations appear
+   - **Fix**: Use `--only-with-annotations` and check file paths
+   - **Symptom**: Annotations too small
+   - **Fix**: Use `--scale 50` to increase visibility
 
-4. Labelbox Upload Issues:
-   - Verify API credentials
-   - Check network connection
-   - Review error logs
+4. **Labelbox Upload Issues**:
+   - **Symptom**: Authentication errors
+   - **Fix**: Verify API key in .env file or environment
+   - **Symptom**: Upload times out
+   - **Fix**: Use `--debug` with smaller batch to test connectivity
 
-### Debug Mode
+5. **Environment Setup Issues**:
+   - **Symptom**: "API key not set" errors
+   - **Fix**: Run `setup_env.sh` or manually create `.env` file
+   - **Symptom**: Permission errors
+   - **Fix**: Check `.env` file permissions with `chmod 600 .env`
 
-Add debug logging:
-```python
-import logging
-logging.basicConfig(level=logging.DEBUG)
-```
+### Log Files
+Check these log files for detailed error information:
+- `outputs/logs/training.log`: Training issues
+- `outputs/logs/inference.log`: Prediction errors
+- `outputs/logs/coco_export.log`: Format conversion problems
+- `outputs/logs/labelbox_import.log`: Upload issues
+
+## Performance Optimization
+
+### Memory Usage
+Control memory usage through these parameters in `config.py`:
+- `BATCH_SIZE_PER_GPU`: Directly affects GPU memory usage
+- `GRADIENT_ACCUMULATION_STEPS`: Higher values use less memory
+- `IMAGE_SIZE`: Lower values reduce memory requirements
+
+### Speed Optimization
+For faster processing:
+- Increase `NUM_GPUS` for parallel processing
+- Adjust `BATCH_SIZE_INFERENCE` based on available memory
+- Set `BATCH_SIZE_PER_GPU` higher for more efficient training
+
+### Disk Space Management
+- Use `cleanup.py` to manage model checkpoint files
+- Set a reasonable `--keep` value based on your storage constraints
 
 ## Contributing
 
@@ -242,16 +369,16 @@ logging.basicConfig(level=logging.DEBUG)
 3. Commit changes
 4. Submit pull request
 
+When contributing, ensure:
+- Consistent debug mode implementation
+- Comprehensive error handling
+- Documentation of parameters
+- Test coverage for new features
+
 ## License
 
 [Specify License]
 
 ## Contact
 
-[Specify Contact Information]
-
-## Acknowledgments
-
-- Facebook AI Research for Mask2Former
-- Labelbox for annotation platform
-- [Other acknowledgments] 
+[Add Contact Information] 
