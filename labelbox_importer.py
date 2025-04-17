@@ -137,6 +137,10 @@ class LabelboxImporter:
             logging.info("Initializing Labelbox client")
             self.client = lb.Client(api_key=LABELBOX_API_KEY)
             
+            # Check basic connectivity
+            if not self._check_connectivity():
+                return False
+            
             logging.info("Connecting to Labelbox project")
             self.project = self.client.get_project(LABELBOX_PROJECT_ID)
             logging.info(f"Connected to project: {self.project.name}")
@@ -147,6 +151,38 @@ class LabelboxImporter:
             if "Resource not found" in str(e):
                 logging.error(f"Project with ID '{LABELBOX_PROJECT_ID}' not found")
                 self.list_available_projects()
+            return False
+    
+    def _check_connectivity(self) -> bool:
+        """Check basic connectivity to Labelbox API"""
+        try:
+            import requests
+            import socket
+            
+            # Check internet connectivity
+            logging.info("Checking internet connectivity...")
+            try:
+                socket.create_connection(("8.8.8.8", 53), timeout=5)
+                logging.info("Internet connection is available")
+            except OSError:
+                logging.error("No internet connection available")
+                return False
+            
+            # Check Labelbox API access
+            logging.info("Checking Labelbox API connectivity...")
+            response = requests.get(
+                "https://api.labelbox.com/api/health", 
+                timeout=10
+            )
+            if response.status_code == 200:
+                logging.info("Labelbox API is accessible")
+                return True
+            else:
+                logging.error(f"Labelbox API returned unexpected status: {response.status_code}")
+                return False
+        except Exception as e:
+            logging.error(f"Connectivity check failed: {str(e)}")
+            logging.debug(traceback.format_exc())
             return False
     
     def list_available_projects(self):
@@ -421,19 +457,61 @@ class LabelboxImporter:
             import_name = f"Building_Damage_Import_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             logging.info(f"Starting MAL import with name: {import_name}")
             
+            # Log information about the upload
+            logging.info(f"Uploading {len(labels)} annotations to Labelbox")
+            logging.debug(f"Project ID: {LABELBOX_PROJECT_ID}")
+            
             # Import as model-assisted labeling predictions
-            upload_job = lb.MALPredictionImport.create_from_objects(
-                client=self.client,
-                project_id=self.project.uid,
-                name=import_name,
-                predictions=labels
-            )
+            try:
+                upload_job = lb.MALPredictionImport.create_from_objects(
+                    client=self.client,
+                    project_id=self.project.uid,
+                    name=import_name,
+                    predictions=labels
+                )
+                logging.info(f"Upload job created with ID: {upload_job.uid if hasattr(upload_job, 'uid') else 'unknown'}")
+            except Exception as e:
+                logging.error(f"Failed to create upload job: {str(e)}")
+                logging.debug(traceback.format_exc())
+                if "connection" in str(e).lower() or "timeout" in str(e).lower():
+                    logging.error("Network connection issue detected. Check your internet connection.")
+                if "unauthorized" in str(e).lower() or "403" in str(e).lower():
+                    logging.error("Authorization issue. Check that your API key is valid and has proper permissions.")
+                return False
             
             logging.info("Waiting for import to complete...")
             
-            # Monitor progress
+            # Set a timeout limit (30 minutes)
+            max_wait_time = 30 * 60  # seconds
+            start_time = time.time()
+            wait_count = 0
+            
+            # Monitor progress with timeout
             while not upload_job.done:
-                logging.info(f"Import status: {upload_job.status}. Waiting...")
+                elapsed_time = time.time() - start_time
+                wait_count += 1
+                
+                # Check if we've exceeded the timeout
+                if elapsed_time > max_wait_time:
+                    logging.error(f"Import timed out after {int(elapsed_time)} seconds")
+                    logging.info("The import may still be processing on Labelbox servers.")
+                    logging.info(f"Check manually at: https://app.labelbox.com/projects/{LABELBOX_PROJECT_ID}")
+                    return False
+                
+                # Get more detailed status every few iterations
+                if wait_count % 3 == 0:
+                    try:
+                        upload_job.refresh()
+                        status_details = f"{upload_job.status}"
+                        if hasattr(upload_job, 'progress') and upload_job.progress:
+                            status_details += f" - Progress: {upload_job.progress:.1f}%"
+                        logging.info(f"Import status: {status_details}. Elapsed time: {int(elapsed_time)}s. Waiting...")
+                    except Exception as status_e:
+                        logging.warning(f"Couldn't refresh job status: {str(status_e)}")
+                else:
+                    logging.info(f"Waiting for import... Elapsed time: {int(elapsed_time)}s")
+                
+                # Wait between status checks
                 time.sleep(10)
             
             # Check for errors
@@ -442,6 +520,7 @@ class LabelboxImporter:
                 return False
             else:
                 logging.info(f"Successfully imported {len(labels)} annotations to Labelbox")
+                logging.info(f"Total import time: {int(time.time() - start_time)} seconds")
                 logging.info(f"You can view the annotations at: https://app.labelbox.com/projects/{LABELBOX_PROJECT_ID}")
                 return True
         except Exception as e:

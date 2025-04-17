@@ -330,6 +330,10 @@ With debug mode enabled:
    - **Fix**: Verify API key in .env file or environment
    - **Symptom**: Upload times out
    - **Fix**: Use `--debug` with smaller batch to test connectivity
+   - **Symptom**: Upload appears stuck
+   - **Fix**: The script now has a 30-minute timeout. Check the logs for network issues. You can also check if the upload completed directly on Labelbox.
+   - **Symptom**: "No internet connection available" error
+   - **Fix**: Check your network connection and firewall settings. The script now checks connectivity before attempting uploads.
 
 5. **Environment Setup Issues**:
    - **Symptom**: "API key not set" errors
