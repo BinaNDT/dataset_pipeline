@@ -43,8 +43,9 @@ OVERLAP_THRESHOLD = 0.5
 BATCH_SIZE_INFERENCE = 4
 
 # Labelbox configuration
-LABELBOX_API_KEY = os.getenv("LABELBOX_API_KEY")
-LABELBOX_PROJECT_ID = os.getenv("LABELBOX_PROJECT_ID")
+# Replace these with your actual Labelbox API key and project ID
+LABELBOX_API_KEY = os.getenv("LABELBOX_API_KEY") or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJjbTlrOXd5cm8wOWN1MDd3YjVrYmkyNWlzIiwib3JnYW5pemF0aW9uSWQiOiJjbTY4aWtxMGMwaHY3MDd5NjF6YjZkcGpoIiwiYXBpS2V5SWQiOiJjbTlrYTRuNTMwdGQ2MDd3cTZ4Mm44emRlIiwic2VjcmV0IjoiZDkzNTNhMDhlMmRiZDI0NDhlMDRiNDE4ZjM0ZDM3NjUiLCJpYXQiOjE3NDQ4Mjg5ODcsImV4cCI6MTc0NzI0ODE4N30.gnT_bby7er2sFUCe1Ed_hHsdSY1IBvLHvi0rrRUwoDE"
+LABELBOX_PROJECT_ID = os.getenv("LABELBOX_PROJECT_ID") or "cm9kigul10fk807wfeh6sccc5"  # ian_pipeline project
 LABELBOX_BATCH_SIZE = 50
 
 # Class mapping
