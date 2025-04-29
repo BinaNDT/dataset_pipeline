@@ -6,7 +6,7 @@ This script uploads images to Labelbox before attempting to add annotations.
 This is a required step - you must upload images first, then add annotations.
 
 Usage:
-    python upload_images_to_labelbox.py [--debug] [--limit N]
+    python upload_images_to_labelbox.py [--debug] [--limit N] [--dataset DATASET_NAME]
 """
 
 import os
@@ -18,6 +18,7 @@ import argparse
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
+from tqdm import tqdm
 
 # Add project root to the path so we can import modules
 sys.path.append(str(Path(__file__).parent.parent))
@@ -29,7 +30,6 @@ load_dotenv()
 # Import Labelbox SDK
 try:
     import labelbox as lb
-    from tqdm import tqdm
 except ImportError:
     print("Error: Labelbox SDK not installed. Please run: pip install labelbox>=3.0.0")
     sys.exit(1)
@@ -174,12 +174,12 @@ def get_image_paths_from_coco(coco_file, limit=None):
         return []
 
 
-def upload_images_to_labelbox(dataset_name, debug=False, target_count=10):
+def upload_images_to_labelbox(dataset_name="ian_pipeline", debug=False, target_count=10):
     """
     Upload images to Labelbox
     
     Args:
-        dataset_name (str): Name of the dataset
+        dataset_name (str): Name of the dataset (defaults to 'ian_pipeline')
         debug (bool): Debug mode - limit uploads to target_count
         target_count (int): Number of images to upload in debug mode
     
@@ -212,12 +212,19 @@ def upload_images_to_labelbox(dataset_name, debug=False, target_count=10):
         logging.error("Please verify your LABELBOX_PROJECT_ID is correct in .env file")
         return 0
     
-    # Create dataset
+    # Find existing dataset by name
     try:
-        dataset = client.create_dataset(name=dataset_name)
-        logging.info(f"Created dataset: {dataset.name} ({dataset.uid})")
+        datasets = client.get_datasets(where=(lb.Dataset.name == dataset_name))
+        dataset = datasets.get_one()
+        if dataset:
+            logging.info(f"Found existing dataset: {dataset.name} ({dataset.uid})")
+        else:
+            # If dataset doesn't exist, create it
+            logging.info(f"Dataset '{dataset_name}' not found, creating it now")
+            dataset = client.create_dataset(name=dataset_name)
+            logging.info(f"Created dataset: {dataset.name} ({dataset.uid})")
     except Exception as e:
-        logging.error(f"Failed to create dataset: {e}")
+        logging.error(f"Failed to find or create dataset: {e}")
         return 0
     
     # Get images from COCO file
@@ -340,11 +347,18 @@ def upload_images_to_labelbox(dataset_name, debug=False, target_count=10):
     
     logging.info(f"Uploaded {success_count} images successfully, {failure_count} failed")
     
-    # Connect dataset to project
+    # Connect dataset to project if not already connected
     try:
-        # Use the correct method to connect dataset to project
-        project.add_dataset(dataset)
-        logging.info(f"Successfully attached dataset to project")
+        # Instead of checking if the dataset is connected to the project,
+        # we'll just attempt to connect it and catch any errors if it's already connected
+        try:
+            project.add_dataset(dataset)
+            logging.info(f"Successfully attached dataset to project")
+        except Exception as e:
+            if "already attached" in str(e).lower():
+                logging.info(f"Dataset already attached to project")
+            else:
+                raise e
     except Exception as e:
         logging.error(f"Failed to attach dataset to project: {str(e)}")
     
@@ -356,6 +370,7 @@ def main():
     parser = argparse.ArgumentParser(description="Upload images to Labelbox")
     parser.add_argument("--debug", action="store_true", help="Debug mode - limit uploads")
     parser.add_argument("--limit", type=int, default=10, help="Number of images to upload in debug mode")
+    parser.add_argument("--dataset", type=str, default="ian_pipeline", help="Name of the dataset to use")
     args = parser.parse_args()
     
     # Create logs directory if it doesn't exist
@@ -380,9 +395,8 @@ def main():
     
     try:
         # Upload images to Labelbox
-        dataset_name = f"building_damage_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        logging.info(f"Creating dataset named: {dataset_name}")
-        success_count = upload_images_to_labelbox(dataset_name, args.debug, args.limit)
+        logging.info(f"Using dataset named: {args.dataset}")
+        success_count = upload_images_to_labelbox(args.dataset, args.debug, args.limit)
         
         if success_count > 0:
             logging.info(f"Successfully uploaded {success_count} images to Labelbox")
