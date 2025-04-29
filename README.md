@@ -160,21 +160,66 @@ Check prediction statistics:
 python analyze_predictions.py
 ```
 
-### Step 7: Upload to Labelbox
+### Step 7: Upload Images to Labelbox
+Before uploading annotations, you must first upload the images to Labelbox:
+
+```bash
+# Upload images with debug mode (limited number)
+python upload_images_to_labelbox.py --debug --limit 5
+
+# Upload all images
+python upload_images_to_labelbox.py
+```
+
+This step is required because Labelbox needs to have the images in its system before you can add annotations to them.
+
+### Step 8: Upload Annotations to Labelbox
 Import predictions to Labelbox for human review:
 
 ```bash
-# From COCO format (default)
-python labelbox_importer.py
+# From COCO format using polygon annotations (default)
+python labelbox_importer.py --debug --limit 5
+
+# From COCO format using mask annotations
+python labelbox_importer.py --format mask --debug --limit 5
 
 # From raw predictions
 python labelbox_importer.py --source predictions
 
-# Debug mode with limited uploads
-python labelbox_importer.py --debug --limit 5
+# Production run with all annotations
+python labelbox_importer.py
 ```
 
-### Step 8: Clean Up (Optional)
+**New Chunked Uploading Options**:
+
+For more reliable uploading, especially with large datasets:
+
+```bash
+# Use smaller chunks (50 annotations per chunk)
+python labelbox_importer.py --chunk-size 50
+
+# Resume upload from a specific chunk (e.g., if it failed at chunk 3)
+python labelbox_importer.py --start-chunk 3
+
+# Use URLs for mask images instead of binary masks
+python labelbox_importer.py --format mask --use-mask-urls
+
+# Use simplified upload mode for better performance
+python labelbox_importer.py --simplified --chunk-size 10
+```
+
+**Using Simplified Mode**:
+If you encounter issues with the standard upload process, try the simplified mode:
+
+```bash
+python labelbox_importer.py --simplified --chunk-size 10
+```
+
+The simplified mode uploads all chunks in parallel and monitors them together, rather than sequentially. This can be more efficient and less likely to get stuck, though it provides less detailed progress information during upload.
+
+**Note**: The annotation format (`--format mask` or `--format polygon`) must match what's configured in your Labelbox project. If you get "AnnotationFormatMismatch" errors, try switching to the other format or changing your project's ontology settings in Labelbox.
+
+### Step 9: Clean Up (Optional)
 Manage disk space by removing old checkpoints:
 
 ```bash
@@ -334,6 +379,16 @@ With debug mode enabled:
    - **Fix**: The script now has a 30-minute timeout. Check the logs for network issues. You can also check if the upload completed directly on Labelbox.
    - **Symptom**: "No internet connection available" error
    - **Fix**: Check your network connection and firewall settings. The script now checks connectivity before attempting uploads.
+   - **Symptom**: Import gets stuck at 81% or another percentage
+   - **Fix**: This is a common Labelbox issue. Try these options:
+     - Use smaller chunks: `--chunk-size 10` 
+     - Use simplified mode: `--simplified --chunk-size 10`
+     - Check Labelbox UI to see if annotations are appearing despite the stuck progress
+     - If a particular chunk is failing, you can resume from that point with `--start-chunk N`
+   - **Symptom**: MAL import is too slow
+   - **Fix**: Try using `--simplified` mode and/or `--use-mask-urls` with mask URLs hosted on a cloud storage service like Google Cloud Storage for faster processing.
+   - **Symptom**: No progress information displayed
+   - **Fix**: The improved script now shows detailed progress information. If it's still not showing, check the logs in `outputs/logs/labelbox_import.log`.
 
 5. **Environment Setup Issues**:
    - **Symptom**: "API key not set" errors
