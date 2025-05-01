@@ -28,32 +28,24 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
 )
 
-def main():
-    """Main function to fix annotations"""
-    
-    # 1. Connect to Labelbox
-    logging.info("Connecting to Labelbox...")
+def get_data_rows_from_project():
+    """Get all data rows from the project using pagination and better error handling"""
     client = lb.Client(api_key=LABELBOX_API_KEY)
     
-    # 2. Get existing images in the project
-    logging.info("Fetching existing images in the project...")
-    
-    # Get all datasets in the project
-    project_query = f"""
+    # Get all datasets in the project using GraphQL
+    project_with_datasets_query = f"""
     {{
       project(where: {{ id: "{LABELBOX_PROJECT_ID}" }}) {{
         datasets {{
           id
           name
-          rowCount
         }}
       }}
     }}
     """
     
-    result = client.execute(project_query)
+    result = client.execute(project_with_datasets_query)
     datasets = result.get("project", {}).get("datasets", [])
-    
     logging.info(f"Found {len(datasets)} datasets in the project")
     
     # Initialize to store all data rows
@@ -61,45 +53,68 @@ def main():
     
     # Get data rows from each dataset
     for dataset in datasets:
-        dataset_id = dataset.get("id")
         dataset_name = dataset.get("name")
+        dataset_id = dataset.get("id")
         
-        logging.info(f"Fetching rows from dataset: {dataset_name}")
+        logging.info(f"Fetching rows from dataset: {dataset_name} (ID: {dataset_id})")
         
-        # Get all data rows for this dataset
+        # Get all data rows for this dataset using pagination
         skip = 0
-        batch_size = 100
+        page_size = 100
+        total_rows = 0
         
         while True:
-            data_row_query = f"""
-            {{
-              dataset(where: {{ id: "{dataset_id}" }}) {{
-                dataRows(skip: {skip}, first: {batch_size}) {{
-                  id
-                  externalId
-                  rowData
+            try:
+                # Use GraphQL to get data rows
+                data_row_query = f"""
+                {{
+                  dataset(where: {{ id: "{dataset_id}" }}) {{
+                    dataRows(skip: {skip}, first: {page_size}) {{
+                      id
+                      externalId
+                      rowData
+                    }}
+                  }}
                 }}
-              }}
-            }}
-            """
-            
-            data_row_result = client.execute(data_row_query)
-            data_rows = data_row_result.get("dataset", {}).get("dataRows", [])
-            
-            if not data_rows:
-                break
+                """
                 
-            all_data_rows.extend(data_rows)
-            
-            if len(data_rows) < batch_size:
-                break
+                data_row_result = client.execute(data_row_query)
+                data_rows = data_row_result.get("dataset", {}).get("dataRows", [])
                 
-            skip += batch_size
+                if not data_rows:
+                    logging.info(f"No more rows in dataset {dataset_name}")
+                    break
+                    
+                total_rows += len(data_rows)
+                all_data_rows.extend(data_rows)
+                
+                if len(data_rows) < page_size:
+                    logging.info(f"Retrieved all {total_rows} rows from dataset {dataset_name}")
+                    break
+                    
+                skip += page_size
+                logging.info(f"Retrieved {total_rows} rows so far from dataset {dataset_name}")
+                
+            except Exception as e:
+                logging.error(f"Error fetching data rows from dataset {dataset_name}: {e}")
+                break
     
-    logging.info(f"Found {len(all_data_rows)} total data rows")
+    logging.info(f"Found {len(all_data_rows)} total data rows across all datasets")
+    return all_data_rows
+
+def main():
+    """Main function to fix annotations"""
+    
+    # 1. Connect to Labelbox
+    logging.info("Connecting to Labelbox...")
+    client = lb.Client(api_key=LABELBOX_API_KEY)
+    
+    # 2. Get existing images in the project using the improved function
+    logging.info("Fetching existing images in the project...")
+    all_data_rows = get_data_rows_from_project()
     
     if not all_data_rows:
-        logging.error("No data rows found in the project")
+        logging.error("No data rows found in the project. Cannot proceed.")
         return
         
     # 3. Load COCO annotations
@@ -113,68 +128,82 @@ def main():
         logging.error(f"Failed to load COCO file: {e}")
         return
     
-    # 4. Extract filename pattern from row data URLs
-    filename_pattern = re.compile(r'(\d{7}\.png)', re.IGNORECASE)
-    
-    # Build URL to data row ID mapping
+    # 4. Create a more comprehensive mapping from filenames to data row IDs
     url_to_row_id = {}
+    
+    # A. Extract filename from URLs, handling various formats
+    filename_pattern = re.compile(r'(\d{6,7}\.(?:png|jpg|jpeg))', re.IGNORECASE)
+    
     for row in all_data_rows:
-        row_id = row.get("id")
+        row_id = row.get("id")  # Use get() method since we're working with dict objects now
+        
+        # Handle row_data from GraphQL response
         row_data = row.get("rowData")
         
-        if not isinstance(row_data, str) or not row_data.startswith("http"):
-            continue
+        if row_data:
+            # Convert to string if not already
+            url = str(row_data)
             
-        # Extract filename from URL
-        match = filename_pattern.search(row_data)
-        if not match:
-            # Try another pattern - look for the last segment before query parameters
-            url_parts = row_data.split('?')[0].split('/')
+            # Try regex pattern first
+            match = filename_pattern.search(url)
+            if match:
+                filename = match.group(1)
+                url_to_row_id[filename] = row_id
+                # Also store without extension
+                name_without_ext = Path(filename).stem
+                url_to_row_id[name_without_ext] = row_id
+                continue
+            
+            # Extract filename from the end of the URL
+            url_parts = url.split('?')[0].split('/')
             if url_parts:
                 last_part = url_parts[-1]
-                # If it contains the .png extension, use it
-                if '.png' in last_part.lower():
+                # If it contains an image extension, use it
+                if any(ext in last_part.lower() for ext in ['.png', '.jpg', '.jpeg']):
                     url_to_row_id[last_part] = row_id
-            continue
-            
-        filename = match.group(1)
-        url_to_row_id[filename] = row_id
+                    # Also store without extension
+                    name_without_ext = Path(last_part).stem
+                    url_to_row_id[name_without_ext] = row_id
     
-    # Now try a more exact approach - extract the image ID from URL
+    # B. Extract from external IDs when available
     for row in all_data_rows:
-        row_id = row.get("id")
+        row_id = row.get("id")  # Use get() method since we're working with dict objects now
+        
+        # Get external ID if available
+        external_id = row.get("externalId")
+        
+        if external_id:
+            # Store the external ID directly
+            url_to_row_id[external_id] = row_id
+            
+            # If it looks like a number, try formatted versions
+            if external_id.isdigit():
+                # Try different zero-padded formats
+                for padding in [6, 7]:
+                    padded_id = external_id.zfill(padding)
+                    url_to_row_id[padded_id] = row_id
+                    url_to_row_id[f"{padded_id}.png"] = row_id
+    
+    # C. Check if the URL contains any of the COCO image filenames
+    for row in all_data_rows:
+        row_id = row.get("id")  # Use get() method since we're working with dict objects now
+        
+        # Handle row_data from GraphQL response
         row_data = row.get("rowData")
         
-        if not isinstance(row_data, str) or not row_data.startswith("http"):
-            continue
-        
-        # Check if the URL contains any of the COCO image filenames
-        for image in coco_data.get("images", []):
-            if image.get("file_name") in row_data:
-                url_to_row_id[image.get("file_name")] = row_id
-    
-    logging.info(f"Mapped {len(url_to_row_id)} image URLs to data rows")
-    
-    # If still empty, try another approach
-    if not url_to_row_id:
-        # For ian_pipeline dataset, we know external IDs are numbers
-        # and images are named as 000000X.png
-        id_to_filename = {
-            "1": "0000000.png",
-            "2": "0000001.png",
-            "3": "0000002.png",
-            "4": "0000003.png",
-            "5": "0000004.png"
-        }
-        
-        for row in all_data_rows:
-            row_id = row.get("id")
-            external_id = row.get("externalId")
+        if row_data:
+            url = str(row_data)
             
-            if external_id in id_to_filename:
-                url_to_row_id[id_to_filename[external_id]] = row_id
-        
-        logging.info(f"Using external ID mapping: found {len(url_to_row_id)} matches")
+            # Check if URL contains image filename
+            for image in coco_data.get("images", []):
+                image_filename = image.get("file_name")
+                if image_filename and image_filename in url:
+                    url_to_row_id[image_filename] = row_id
+                    # Also try without extension
+                    name_without_ext = Path(image_filename).stem
+                    url_to_row_id[name_without_ext] = row_id
+    
+    logging.info(f"Mapped {len(url_to_row_id)} image filenames to data rows")
     
     # 5. Build image ID to filename mapping from COCO
     image_id_to_filename = {}
@@ -184,21 +213,26 @@ def main():
     # 6. Match annotations to data rows
     annotations_list = []
     matched_count = 0
+    unmatched_count = 0
     
-    for filename, data_row_id in url_to_row_id.items():
+    for image_id, filename in image_id_to_filename.items():
+        # Try to find data row ID for this image
+        data_row_id = None
+        
+        # Try different variations of the filename
+        for key in [filename, Path(filename).stem, f"{Path(filename).stem}.png"]:
+            if key in url_to_row_id:
+                data_row_id = url_to_row_id[key]
+                break
+        
+        if not data_row_id:
+            unmatched_count += 1
+            logging.warning(f"No matching data row found for image: {filename}")
+            continue
+            
         # Find annotations for this image
         image_annotations = []
         
-        # Get image ID from filename
-        image_id = None
-        for img_id, img_filename in image_id_to_filename.items():
-            if img_filename == filename:
-                image_id = img_id
-                break
-        
-        if image_id is None:
-            continue
-            
         # Find annotations for this image ID
         for ann in coco_data.get("annotations", []):
             if ann.get("image_id") == image_id:
@@ -218,9 +252,15 @@ def main():
                         
                     polygon_points = []
                     for i in range(0, len(segmentation[0]), 2):
-                        x = segmentation[0][i]
-                        y = segmentation[0][i+1]
-                        polygon_points.append([x, y])
+                        if i+1 < len(segmentation[0]):  # Ensure we have both x and y
+                            x = segmentation[0][i]
+                            y = segmentation[0][i+1]
+                            polygon_points.append([x, y])
+                    
+                    # Skip polygons with too few points
+                    if len(polygon_points) < 3:
+                        logging.warning(f"Skipping polygon with fewer than 3 points for {filename}")
+                        continue
                     
                     # Add to image annotations
                     image_annotations.append({
@@ -232,7 +272,7 @@ def main():
                         }
                     })
                 except Exception as e:
-                    logging.error(f"Error processing annotation: {e}")
+                    logging.error(f"Error processing annotation for {filename}: {e}")
                     continue
         
         # Create entry for this image
@@ -247,6 +287,7 @@ def main():
             })
     
     logging.info(f"Created annotations for {matched_count} images")
+    logging.info(f"Could not match {unmatched_count} images to data rows")
     
     if not annotations_list:
         logging.error("No annotations matched to data rows")
@@ -268,11 +309,7 @@ def main():
     import_name = f"Fixed_Import_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
     try:
-        # Check what method signatures are available
-        logging.info(f"Available methods: {dir(lb.MALPredictionImport)}")
-        
-        # Try alternate method to upload
-        # Upload the annotations file - use file_path instead of predictions_filepath
+        # Upload the annotations file using MALPredictionImport
         mal_import = lb.MALPredictionImport.create_from_file(
             client=client,
             project_id=LABELBOX_PROJECT_ID,
@@ -288,22 +325,32 @@ def main():
         max_wait_time = 5 * 60  # 5 minutes
         
         while time.time() - start_time < max_wait_time:
-            mal_import.refresh()
-            
-            if hasattr(mal_import, 'state'):
-                state = mal_import.state
-                progress = mal_import.progress if hasattr(mal_import, 'progress') else "unknown"
+            try:
+                mal_import.refresh()
+                
+                state = None
+                progress = None
+                
+                if hasattr(mal_import, 'state'):
+                    state = mal_import.state
+                if hasattr(mal_import, 'progress'):
+                    progress = mal_import.progress
                 
                 logging.info(f"Upload status: {state}, Progress: {progress}")
                 
-                if state == "COMPLETE" or state == "FINISHED":
+                if state in ["COMPLETE", "FINISHED"]:
                     logging.info("Upload completed successfully!")
                     break
-                elif state == "FAILED" or state == "ERROR":
+                elif state in ["FAILED", "ERROR"]:
                     logging.error("Upload failed!")
                     break
-            
-            time.sleep(10)
+                
+                # Wait before checking again
+                time.sleep(10)
+                
+            except Exception as e:
+                logging.error(f"Error checking import status: {e}")
+                time.sleep(10)
         
         logging.info("Process completed!")
         logging.info("Check the Labelbox UI to confirm annotations are visible.")
@@ -312,60 +359,44 @@ def main():
         logging.error(f"Error uploading annotations: {e}")
         logging.error(f"Exception details: {str(e)}")
         
-        # Try a direct, manual approach through the API
+        # Try a standard LabelImport approach as fallback
         try:
-            logging.info("Attempting direct API upload...")
+            logging.info("Attempting to use LabelImport as fallback...")
             
-            # Upload the predictions file to Labelbox cloud storage
-            with open(ndjson_file, 'rb') as f:
-                file_content = f.read()
-                
-            # Create a mutation to upload file
-            upload_query = """
-            mutation UploadFile($file: Upload!, $contentLength: Int!, $sign: Boolean) {
-                uploadFile(file: $file, contentLength: $contentLength, sign: $sign) {
-                    url
-                    filename
-                }
-            }
+            # For fallback, we'll try to manually construct the import using GraphQL
+            # This avoids using lb.data.annotation_types which doesn't exist in this SDK version
+            
+            import_query = f"""
+            mutation CreateLabelImport($projectId: ID!, $input: CreateLabelImportInput!) {{
+                createLabelImport(projectId: $projectId, input: $input) {{
+                    id
+                    name
+                    status
+                    createdAt
+                }}
+            }}
             """
             
-            # Execute the upload mutation
-            file_size = os.path.getsize(ndjson_file)
-            upload_result = client.execute(
-                upload_query,
-                variables={
-                    "file": file_content,
-                    "contentLength": file_size,
-                    "sign": False
+            variables = {
+                "projectId": LABELBOX_PROJECT_ID,
+                "input": {
+                    "name": import_name,
+                    "sourceType": "NDJSON_URL",
+                    "source": str(ndjson_file)
                 }
-            )
+            }
             
-            logging.info(f"File upload result: {upload_result}")
-            
-            # Now import the predictions using the API
-            if upload_result.get("uploadFile", {}).get("url"):
-                file_url = upload_result["uploadFile"]["url"]
-                
-                import_query = f"""
-                mutation {{
-                    createModelAssistedLabelingPredictionImport(
-                        data: {{
-                            projectId: "{LABELBOX_PROJECT_ID}",
-                            name: "{import_name}",
-                            inputUriPrefix: "{file_url}"
-                        }}
-                    ) {{
-                        id
-                    }}
-                }}
-                """
-                
-                import_result = client.execute(import_query)
-                logging.info(f"Import result: {import_result}")
+            try:
+                result = client.execute(import_query, variables=variables)
+                logging.info(f"Label import created: {result}")
+                return True
+            except Exception as e:
+                logging.error(f"Error creating label import: {e}")
+                return False
             
         except Exception as inner_e:
-            logging.error(f"Error in direct API upload: {inner_e}")
+            logging.error(f"Error in LabelImport attempt: {inner_e}")
+            return False
 
 if __name__ == "__main__":
     main() 

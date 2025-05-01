@@ -14,7 +14,7 @@ It consolidates functionality from previous scripts:
 - labelbox_uploader.py
 
 Usage:
-    python labelbox_importer.py [--source {predictions,coco}] [--debug] [--limit N] [--format {mask,polygon}] [--dataset-name NAME]
+    python labelbox_importer.py [--source {predictions,coco,test}] [--debug] [--limit N] [--format {mask,polygon}] [--dataset-name NAME]
 
 Arguments:
     --source        Source format for predictions (default: coco)
@@ -977,27 +977,93 @@ class LabelboxImporter:
             logging.debug(traceback.format_exc())
             return False
     
-    def run(self) -> bool:
-        """Main execution method"""
-        # Connect to Labelbox
-        if not self.connect_to_labelbox():
+    def import_from_test(self) -> bool:
+        """Import directly from the test_annotations.ndjson file"""
+        try:
+            test_file = PREDICTIONS_DIR / 'test_annotations.ndjson'
+            if not test_file.exists():
+                logging.error(f"Test annotations file not found at {test_file}")
+                return False
+
+            logging.info(f"Loading test annotations from {test_file}")
+            
+            # Load NDJSON file line by line (each line is a separate JSON object)
+            annotations = []
+            with open(test_file, 'r') as f:
+                for line in f:
+                    try:
+                        annotation = json.loads(line)
+                        annotations.append(annotation)
+                    except json.JSONDecodeError as e:
+                        logging.error(f"Error parsing JSON: {str(e)}")
+                        continue
+            
+            logging.info(f"Loaded {len(annotations)} annotations from test file")
+            
+            # Upload annotations directly (they're already in Labelbox format)
+            if not self.project:
+                if not self.connect_to_labelbox():
+                    return False
+                
+            # Import annotations directly
+            import_name = f"test_import_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            logging.info(f"Creating MAL prediction import with name: {import_name}")
+            
+            try:
+                upload_job = lb.MALPredictionImport.create_from_objects(
+                    client=self.client,
+                    project_id=self.project.uid,
+                    name=import_name,
+                    predictions=annotations
+                )
+                
+                # Check for errors
+                if upload_job.errors:
+                    for error in upload_job.errors:
+                        logging.error(f"Upload error: {error}")
+                    return False
+                
+                logging.info("MAL prediction import created successfully")
+                logging.info(f"Status: {upload_job.statuses}")
+                return True
+                
+            except Exception as e:
+                logging.error(f"Error creating MAL prediction import: {str(e)}")
+                logging.debug(traceback.format_exc())
+                return False
+            
+        except Exception as e:
+            logging.error(f"Error importing from test file: {str(e)}")
+            logging.debug(traceback.format_exc())
             return False
-        
-        # Run appropriate import method based on source
-        if self.source == 'coco':
-            return self.import_from_coco()
-        elif self.source == 'predictions':
-            return self.import_from_predictions()
-        else:
-            logging.error(f"Unknown source format: {self.source}")
+    
+    def run(self) -> bool:
+        """Run the import process end-to-end"""
+        try:
+            # Connect to Labelbox
+            if not self.connect_to_labelbox():
+                return False
+            
+            # Import data based on source format
+            if self.source == 'coco':
+                return self.import_from_coco()
+            elif self.source == 'predictions':
+                return self.import_from_predictions()
+            elif self.source == 'test':
+                return self.import_from_test()
+            else:
+                logging.error(f"Unsupported source format: {self.source}")
+                return False
+        except Exception as e:
+            logging.error(f"Error running import: {str(e)}")
+            logging.debug(traceback.format_exc())
             return False
 
 
 def main():
-    """Main entry point"""
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Import annotations to Labelbox')
-    parser.add_argument('--source', type=str, choices=['predictions', 'coco'], default='coco',
+    """Main entry point for the script"""
+    parser = argparse.ArgumentParser(description='Import annotations into Labelbox')
+    parser.add_argument('--source', choices=['predictions', 'coco', 'test'], default='coco',
                         help='Source format for predictions (default: coco)')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode with limited uploads')
     parser.add_argument('--limit', type=int, default=10, help='Max number of images to upload in debug mode')

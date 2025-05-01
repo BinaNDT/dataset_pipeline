@@ -59,6 +59,7 @@ def main():
     # 1. Connect to Labelbox
     logging.info("Connecting to Labelbox...")
     client = lb.Client(api_key=LABELBOX_API_KEY)
+    logging.info("Initializing Labelbox client")
     
     # 2. Get project schema
     logging.info(f"Fetching project schema for ID: {LABELBOX_PROJECT_ID}")
@@ -68,12 +69,35 @@ def main():
         project = client.get_project(LABELBOX_PROJECT_ID)
         logging.info(f"Connected to project: {project.name}")
         
-        # Get ontology
+        # Get ontology using GraphQL query directly
         ontology = project.ontology()
         logging.info(f"Project ontology ID: {ontology.uid}")
         
-        # Convert to dict for easier handling
-        schema_json = ontology.asdict()
+        # Query ontology details using GraphQL
+        ontology_query = f"""
+        {{
+          ontology(where: {{ id: "{ontology.uid}" }}) {{
+            name
+            tools {{
+              name
+              tool
+              required
+              classifications {{
+                name
+                instructions
+                type
+                options {{
+                  label
+                  value
+                }}
+              }}
+            }}
+          }}
+        }}
+        """
+        
+        ontology_result = client.execute(ontology_query)
+        schema_json = ontology_result.get('ontology', {})
         
         # 3. Print tools and features
         logging.info("Project tools and features:")

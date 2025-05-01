@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-Simple Labelbox Importer
+Simple Labelbox Importer for Labelbox SDK 6.x
 
-This script provides a simplified alternative to labelbox_importer.py.
-It uses the standard LabelImport approach rather than MAL import,
-which should be more reliable for uploading ground truth.
+This script is compatible with Labelbox SDK 6.x which doesn't have the data module.
+It imports annotations in NDJSON format directly.
 
 Usage:
-    python simple_labelbox_import.py [--source {predictions,coco}] [--debug] [--limit N]
+    python simple_labelbox_import_6x.py [--source {predictions,coco}] [--debug] [--limit N]
 """
 
 import os
@@ -30,23 +29,14 @@ from config import *
 # Import Labelbox SDK
 try:
     import labelbox as lb
-    # We're using NDJSON format directly, so we don't need annotation_types
 except ImportError:
-    # Try with a different approach - the test script is working, so labelbox must be importable somehow
-    import sys
-    import subprocess
-    
-    print("Attempting to determine labelbox installation...")
-    subprocess.call([sys.executable, "-c", "import labelbox; print(f'Labelbox version: {labelbox.__version__}')"])
-    
-    print("\nCouldn't import labelbox module. Please check your Python environment.")
-    print("You may be using a different Python environment than the one where labelbox is installed.")
-    print("Try running: 'which python' to see which Python is being used.")
+    print("Labelbox SDK not installed. Please install it with:")
+    print("pip install --user labelbox")
     sys.exit(1)
 
 
 class SimpleLabelboxImporter:
-    """Handles Labelbox importing using standard LabelImport approach"""
+    """Handles Labelbox importing using NDJSON format for SDK 6.x"""
     
     def __init__(self, args):
         """Initialize the importer with configuration settings"""
@@ -146,15 +136,6 @@ class SimpleLabelboxImporter:
         except Exception as e:
             logging.error(f"Error listing projects: {str(e)}")
     
-    def create_polygon_from_points(self, points):
-        """Convert a list of points to a Labelbox Polygon"""
-        lb_points = []
-        for i in range(0, len(points), 2):
-            if i + 1 < len(points):
-                lb_points.append(Point(x=points[i], y=points[i+1]))
-        
-        return Polygon(points=lb_points)
-
     def get_data_row_ids(self) -> Dict[str, str]:
         """Get mapping of filenames to data row IDs from Labelbox"""
         logging.info("Fetching data rows from Labelbox project...")
@@ -664,7 +645,7 @@ class SimpleLabelboxImporter:
 def main():
     """Main entry point"""
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Simple import of annotations to Labelbox')
+    parser = argparse.ArgumentParser(description='Simple import of annotations to Labelbox (compatible with SDK 6.x)')
     parser.add_argument('--source', type=str, choices=['predictions', 'coco'], default='coco',
                         help='Source format for predictions (default: coco)')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode with limited uploads')

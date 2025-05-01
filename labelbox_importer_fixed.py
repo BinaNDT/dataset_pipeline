@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-Simple Labelbox Importer
+Labelbox Importer Fixed for SDK 6.10.0
 
-This script provides a simplified alternative to labelbox_importer.py.
-It uses the standard LabelImport approach rather than MAL import,
-which should be more reliable for uploading ground truth.
+This script is specially adapted to work with Labelbox SDK 6.10.0.
+It properly imports annotations for image data using the correct API patterns.
 
 Usage:
-    python simple_labelbox_import.py [--source {predictions,coco}] [--debug] [--limit N]
+    python labelbox_importer_fixed.py [--source {predictions,coco}] [--debug] [--limit N]
 """
 
 import os
@@ -19,6 +18,7 @@ import traceback
 import argparse
 import numpy as np
 import time
+import requests
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Union, Tuple
@@ -27,26 +27,20 @@ from typing import List, Dict, Any, Optional, Union, Tuple
 sys.path.append(str(Path(__file__).parent))
 from config import *
 
+# Add default schema ID if not in config
+LABELBOX_SCHEMA_ID = os.environ.get("LABELBOX_SCHEMA_ID", None)
+
 # Import Labelbox SDK
 try:
     import labelbox as lb
-    # We're using NDJSON format directly, so we don't need annotation_types
 except ImportError:
-    # Try with a different approach - the test script is working, so labelbox must be importable somehow
-    import sys
-    import subprocess
-    
-    print("Attempting to determine labelbox installation...")
-    subprocess.call([sys.executable, "-c", "import labelbox; print(f'Labelbox version: {labelbox.__version__}')"])
-    
-    print("\nCouldn't import labelbox module. Please check your Python environment.")
-    print("You may be using a different Python environment than the one where labelbox is installed.")
-    print("Try running: 'which python' to see which Python is being used.")
+    print("Labelbox SDK not installed. Please install it with:")
+    print("pip install --user labelbox==6.10.0")
     sys.exit(1)
 
 
-class SimpleLabelboxImporter:
-    """Handles Labelbox importing using standard LabelImport approach"""
+class FixedLabelboxImporter:
+    """Handles Labelbox importing using NDJSON format for SDK 6.10.0"""
     
     def __init__(self, args):
         """Initialize the importer with configuration settings"""
@@ -146,15 +140,6 @@ class SimpleLabelboxImporter:
         except Exception as e:
             logging.error(f"Error listing projects: {str(e)}")
     
-    def create_polygon_from_points(self, points):
-        """Convert a list of points to a Labelbox Polygon"""
-        lb_points = []
-        for i in range(0, len(points), 2):
-            if i + 1 < len(points):
-                lb_points.append(Point(x=points[i], y=points[i+1]))
-        
-        return Polygon(points=lb_points)
-
     def get_data_row_ids(self) -> Dict[str, str]:
         """Get mapping of filenames to data row IDs from Labelbox"""
         logging.info("Fetching data rows from Labelbox project...")
@@ -194,7 +179,7 @@ class SimpleLabelboxImporter:
             
             while True:
                 try:
-                    # Use GraphQL to get data rows
+                    # Use GraphQL to get data rows - adapted for SDK 6.10.0
                     data_row_query = f"""
                     {{
                       dataset(where: {{ id: "{dataset_id}" }}) {{
@@ -352,16 +337,19 @@ class SimpleLabelboxImporter:
                             logging.warning(f"Skipping polygon with fewer than 3 points for {image_filename}")
                             continue
                         
-                        # Create the annotation in NDJSON format
+                        # Use bare-minimum format for predictions in Labelbox v6.10.0
+                        prediction_id = str(uuid.uuid4())
                         annotation = {
-                            "uuid": str(anno.get("id", uuid.uuid4())),
-                            "name": category_name,
-                            "value": {
-                                "format": "polygon2d",
-                                "points": points
-                            },
+                            "uuid": prediction_id,
                             "dataRow": {
                                 "id": data_row_id
+                            },
+                            "modelName": "Building_Damage_Model",
+                            "score": 0.95,
+                            "labelName": category_name,
+                            "geometry": {
+                                "type": "polygon",
+                                "coordinates": points
                             }
                         }
                         
@@ -481,17 +469,20 @@ class SimpleLabelboxImporter:
                                     # Extract the point as a normal list [x, y]
                                     points.append([float(point[0][0]), float(point[0][1])])
                                 
-                                # Create polygon in NDJSON format
+                                # Use bare-minimum format for predictions in Labelbox v6.10.0
                                 if len(points) >= 3:
+                                    prediction_id = str(uuid.uuid4())
                                     annotation = {
-                                        "uuid": str(uuid.uuid4()),
-                                        "name": class_name,
-                                        "value": {
-                                            "format": "polygon2d",
-                                            "points": points
-                                        },
+                                        "uuid": prediction_id,
                                         "dataRow": {
                                             "id": data_row_id
+                                        },
+                                        "modelName": "Building_Damage_Model",
+                                        "score": pred.get('confidence', 0.9),
+                                        "labelName": class_name,
+                                        "geometry": {
+                                            "type": "polygon",
+                                            "coordinates": points
                                         }
                                     }
                                     all_annotations.append(annotation)
@@ -529,7 +520,7 @@ class SimpleLabelboxImporter:
             return False
     
     def upload_annotations_to_labelbox(self, annotations: List) -> bool:
-        """Upload prepared annotations to Labelbox using MALPredictionImport"""
+        """Upload prepared annotations to Labelbox using compatible methods for SDK 6.10.0"""
         try:
             # Create a unique name for the import
             import_name = f"Building_Damage_Import_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -546,102 +537,140 @@ class SimpleLabelboxImporter:
             
             logging.info(f"Saved annotations to temporary file: {temp_file}")
             
-            # Import using MALPredictionImport
+            # Try multiple approaches for Labelbox SDK 6.10.0
+            success = False
+            
+            # Approach 1: Try using MALPredictionImport with correct parameters
             try:
-                upload_job = lb.MALPredictionImport.create_from_file(
-                    client=self.client,
-                    project_id=self.project.uid,
-                    name=import_name,
-                    file_path=str(temp_file)
-                )
-                
-                logging.info(f"Upload started with job ID: {upload_job.uid}")
-                logging.info("Monitoring upload progress...")
-                
-                # Monitor progress with timeout
-                max_wait_time = 15 * 60  # 15 minutes
-                start_time = time.time()
-                
-                while time.time() - start_time < max_wait_time:
-                    try:
-                        upload_job.refresh()
-                        
-                        state = None
-                        if hasattr(upload_job, 'state'):
-                            state = upload_job.state
-                        
-                        progress = None
-                        if hasattr(upload_job, 'progress'):
-                            progress = upload_job.progress
-                            
-                        logging.info(f"Upload status: {state}, Progress: {progress}")
-                        
-                        if state in ["COMPLETE", "FINISHED"]:
-                            logging.info("Upload completed successfully!")
-                            break
-                        elif state in ["FAILED", "ERROR"]:
-                            logging.error("Upload failed!")
-                            break
-                        
-                        # Wait between status checks
-                        time.sleep(15)
-                    except Exception as e:
-                        logging.warning(f"Couldn't refresh job status: {str(e)}")
-                        time.sleep(15)
-                
-                # Check for errors
-                if hasattr(upload_job, 'errors') and upload_job.errors:
-                    logging.error(f"Import had errors: {upload_job.errors}")
-                    return False
-                
-                logging.info(f"Successfully imported annotations to Labelbox")
-                logging.info(f"Total import time: {int(time.time() - start_time)} seconds")
-                logging.info(f"You can view the annotations at: https://app.labelbox.com/projects/{LABELBOX_PROJECT_ID}")
-                return True
+                if hasattr(lb, 'MALPredictionImport'):
+                    logging.info("Trying MALPredictionImport approach...")
                     
+                    # Create the import job with minimal parameters
+                    mal_import = lb.MALPredictionImport.create(
+                        client=self.client,
+                        project_id=self.project.uid,
+                        name=import_name
+                    )
+                    
+                    # Add the file to the import job
+                    with open(temp_file, 'rb') as f:
+                        mal_import.add_file(f)
+                    
+                    # Process the import job
+                    mal_import.process()
+                    
+                    logging.info(f"Successfully created and processed import job with ID: {mal_import.uid}")
+                    success = True
             except Exception as e:
-                logging.error(f"Error during MALPredictionImport: {str(e)}")
-                logging.debug(traceback.format_exc())
+                logging.warning(f"MALPredictionImport approach failed: {str(e)}")
                 
-                # Try alternate method if the first one fails
+                # Try MALPredictionImport with alternative approach
                 try:
-                    logging.info("Trying alternate import method...")
+                    if hasattr(lb, 'MALPredictionImport') and hasattr(lb.MALPredictionImport, 'create_from_objects'):
+                        logging.info("Trying MALPredictionImport.create_from_objects approach...")
+                        
+                        # Load annotations from file
+                        with open(temp_file, 'r') as f:
+                            annotation_objects = [json.loads(line) for line in f]
+                        
+                        # Create import job from objects
+                        job = lb.MALPredictionImport.create_from_objects(
+                            client=self.client,
+                            project_id=self.project.uid,
+                            name=import_name,
+                            predictions=annotation_objects
+                        )
+                        
+                        logging.info(f"Successfully created import job with ID: {job.uid if hasattr(job, 'uid') else 'unknown'}")
+                        success = True
+                except Exception as e2:
+                    logging.warning(f"Alternative MALPredictionImport approach failed: {str(e2)}")
+            
+            # Approach 2: Use GraphQL directly if MALPredictionImport approaches failed
+            if not success:
+                try:
+                    logging.info("Trying direct GraphQL approach...")
                     
-                    # Execute a direct GraphQL mutation to upload the annotations
-                    project_query = f"""
-                    mutation CreateImport($projectId: ID!, $input: CreateModelRunImportInput!) {{
-                        createModelRunImport(projectId: $projectId, input: $input) {{
-                            modelRunImport {{
-                                id
-                                name
-                                status
-                                createdAt
-                            }}
-                        }}
-                    }}
+                    # 1. Create a model run
+                    create_model_run_mutation = """
+                    mutation CreateModelRunFromPredictions($projectId: ID!, $name: String!) {
+                      createModelRun(data: {projectId: $projectId, name: $name}) {
+                        id
+                      }
+                    }
                     """
                     
-                    variables = {
-                        "projectId": self.project.uid,
-                        "input": {
-                            "name": import_name,
-                            "sourceType": "NDJSON_URL",
-                            "source": str(temp_file),
-                            "includeInPlatformMetrics": True
+                    result = self.client.execute(
+                        create_model_run_mutation, 
+                        {"projectId": self.project.uid, "name": import_name}
+                    )
+                    
+                    model_run_id = result.get("createModelRun", {}).get("id")
+                    
+                    if not model_run_id:
+                        raise Exception("Failed to create model run")
+                    
+                    logging.info(f"Created model run with ID: {model_run_id}")
+                    
+                    # 2. Upload the predictions file
+                    with open(temp_file, 'rb') as f:
+                        files = {'file': f}
+                        upload_url = f"https://api.labelbox.com/graphql/predictions/{model_run_id}"
+                        headers = {'Authorization': f'Bearer {self.client.api_key}'}
+                        
+                        response = requests.post(upload_url, files=files, headers=headers)
+                        
+                        if response.status_code >= 300:
+                            raise Exception(f"Failed to upload predictions: {response.text}")
+                    
+                    logging.info(f"Successfully uploaded predictions to model run {model_run_id}")
+                    success = True
+                except Exception as e3:
+                    logging.error(f"GraphQL approach failed: {str(e3)}")
+            
+            # Approach 3: As a last resort, try the bulk import API
+            if not success:
+                try:
+                    logging.info("Trying bulk import API approach...")
+                    
+                    # Upload predictions file (bulk import)
+                    with open(temp_file, 'rb') as f:
+                        upload_url = "https://api.labelbox.com/api/bulk/import"
+                        headers = {'Authorization': f'Bearer {self.client.api_key}'}
+                        payload = {
+                            'name': import_name,
+                            'projectId': self.project.uid,
+                            'contentType': 'image_annotation'
                         }
-                    }
+                        
+                        files = {'file': f}
+                        
+                        response = requests.post(
+                            upload_url, 
+                            data=payload,
+                            files=files,
+                            headers=headers
+                        )
+                        
+                        if response.status_code >= 300:
+                            raise Exception(f"Failed to upload predictions: {response.text}")
                     
-                    result = self.client.execute(project_query, variables=variables)
-                    logging.info(f"Import result: {result}")
-                    
-                    return True
-                except Exception as inner_e:
-                    logging.error(f"Error during alternate import: {str(inner_e)}")
-                    logging.debug(traceback.format_exc())
-                    return False
+                    logging.info(f"Successfully started bulk import")
+                    success = True
+                except Exception as e4:
+                    logging.error(f"Bulk import approach failed: {str(e4)}")
+            
+            if not success:
+                logging.error("All upload approaches failed. Please check the logs for details.")
+                return False
+            
+            logging.info(f"Successfully uploaded annotations to Labelbox")
+            logging.info(f"You can view the annotations at: https://app.labelbox.com/projects/{LABELBOX_PROJECT_ID}")
+            
+            return True
                 
         except Exception as e:
-            logging.error(f"Error during Labelbox import: {str(e)}")
+            logging.error(f"Error during upload: {str(e)}")
             logging.debug(traceback.format_exc())
             return False
     
@@ -664,7 +693,7 @@ class SimpleLabelboxImporter:
 def main():
     """Main entry point"""
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Simple import of annotations to Labelbox')
+    parser = argparse.ArgumentParser(description='Labelbox importer (compatible with SDK 6.10.0)')
     parser.add_argument('--source', type=str, choices=['predictions', 'coco'], default='coco',
                         help='Source format for predictions (default: coco)')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode with limited uploads')
@@ -673,7 +702,7 @@ def main():
     args = parser.parse_args()
     
     # Start the import process
-    importer = SimpleLabelboxImporter(args)
+    importer = FixedLabelboxImporter(args)
     success = importer.run()
     
     if success:

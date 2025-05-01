@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Test Labelbox Connection
+Test Labelbox Connection and Data Row ID Retrieval
 
-A simple utility script to test connectivity to Labelbox API.
-This helps diagnose connection issues before attempting full uploads.
+This script verifies that we can connect to Labelbox and retrieve data row IDs correctly.
+It also demonstrates the proper way to link annotations to data rows.
 
 Usage:
     python test_labelbox_connection.py
@@ -11,152 +11,289 @@ Usage:
 
 import os
 import sys
-import time
+import json
 import logging
-import requests
-import socket
-import traceback
 from pathlib import Path
+from typing import Dict, List, Any
+import uuid
 
-# Setup path to import from config
+# Setup path for importing from config
 sys.path.append(str(Path(__file__).parent))
 from config import *
 
-# Configure logging
+# Import Labelbox SDK
+try:
+    import labelbox as lb
+except ImportError:
+    print("Error: Labelbox SDK not installed. Please run: pip install labelbox>=3.0.0")
+    sys.exit(1)
+
+# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
+    handlers=[
+        logging.FileHandler(LOGS_DIR / 'test_connection.log'),
+        logging.StreamHandler()
+    ]
 )
 
-def check_internet_connectivity():
-    """Check basic internet connectivity"""
-    try:
-        logging.info("Testing general internet connectivity...")
-        socket.create_connection(("8.8.8.8", 53), timeout=5)
-        logging.info("✅ Internet connection is available")
-        return True
-    except OSError as e:
-        logging.error(f"❌ No internet connection available: {str(e)}")
-        return False
-
-def check_labelbox_api():
-    """Check if Labelbox API is reachable"""
+def test_connection() -> bool:
+    """Test connection to Labelbox API"""
     try:
         logging.info("Testing connection to Labelbox API...")
-        start_time = time.time()
         
-        # Try a different endpoint - main API URL
-        response = requests.get("https://api.labelbox.com", timeout=10)
-        elapsed = time.time() - start_time
+        if not LABELBOX_API_KEY:
+            logging.error("LABELBOX_API_KEY environment variable not set")
+            return False
         
-        if response.status_code < 400:  # Any non-error response is fine
-            logging.info(f"✅ Labelbox API is accessible (response time: {elapsed:.2f}s)")
-            return True
-        else:
-            logging.error(f"❌ Labelbox API returned status code {response.status_code}")
-            # Still proceed even if we get an error response
-            logging.info("Continuing with authentication test anyway...")
-            return True
-    except Exception as e:
-        logging.error(f"❌ Failed to connect to Labelbox API: {str(e)}")
-        # Handle connection timeout
-        if "timeout" in str(e).lower():
-            logging.error("The connection timed out. This might be due to network restrictions.")
-            logging.info("Check if your network allows connections to api.labelbox.com")
-        return False
-
-def check_labelbox_auth():
-    """Check if Labelbox API key is valid"""
-    if not LABELBOX_API_KEY:
-        logging.error("❌ LABELBOX_API_KEY is not set")
-        logging.info("Please set up your environment variables using setup_env.sh")
-        return False
-    
-    try:
-        import labelbox as lb
-        
-        logging.info("Testing Labelbox authentication...")
-        start_time = time.time()
         client = lb.Client(api_key=LABELBOX_API_KEY)
         user = client.get_user()
-        elapsed = time.time() - start_time
         
-        logging.info(f"✅ Successfully authenticated with Labelbox (response time: {elapsed:.2f}s)")
-        logging.info(f"✅ Connected as user: {user.email}")
+        logging.info(f"Successfully connected to Labelbox as: {user.email}")
         return True
     except Exception as e:
-        logging.error(f"❌ Authentication with Labelbox failed: {str(e)}")
-        if "Invalid API key" in str(e):
-            logging.info("Please check your API key in the .env file")
+        logging.error(f"Failed to connect to Labelbox: {e}")
         return False
 
-def check_project_access():
-    """Check if the configured project ID is accessible"""
-    if not LABELBOX_PROJECT_ID:
-        logging.error("❌ LABELBOX_PROJECT_ID is not set")
-        logging.info("Please set up your environment variables using setup_env.sh")
-        return False
-    
+def test_project_access() -> bool:
+    """Test access to the specified project"""
     try:
-        import labelbox as lb
-        
         logging.info(f"Testing access to project ID: {LABELBOX_PROJECT_ID}")
+        
+        if not LABELBOX_PROJECT_ID:
+            logging.error("LABELBOX_PROJECT_ID environment variable not set")
+            return False
+        
         client = lb.Client(api_key=LABELBOX_API_KEY)
         project = client.get_project(LABELBOX_PROJECT_ID)
         
-        logging.info(f"✅ Successfully accessed project: {project.name}")
+        logging.info(f"Successfully accessed project: {project.name}")
+        
+        # List datasets in the project - using the correct method
+        # Note: different versions of the Labelbox SDK may have different methods
+        # Try the query approach which should be more stable
+        project_with_datasets_query = f"""
+        {{
+          project(where: {{ id: "{LABELBOX_PROJECT_ID}" }}) {{
+            datasets {{
+              id
+              name
+              rowCount
+            }}
+          }}
+        }}
+        """
+        
+        result = client.execute(project_with_datasets_query)
+        datasets = result.get("project", {}).get("datasets", [])
+        
+        logging.info(f"Project contains {len(datasets)} datasets:")
+        
+        for dataset in datasets:
+            row_count = dataset.get("rowCount", 0)
+            dataset_name = dataset.get("name", "Unknown")
+            logging.info(f"  • {dataset_name}: {row_count} data rows")
+        
         return True
     except Exception as e:
-        logging.error(f"❌ Failed to access project: {str(e)}")
-        if "Resource not found" in str(e):
-            # List available projects
-            logging.info("Available projects in your Labelbox account:")
-            try:
-                client = lb.Client(api_key=LABELBOX_API_KEY)
-                projects = client.get_projects()
-                for project in projects:
-                    logging.info(f"  • {project.name} (ID: {project.uid})")
-            except Exception:
-                logging.error("Failed to list available projects")
+        logging.error(f"Failed to access project: {e}")
+        return False
+
+def get_data_row_ids() -> Dict[str, str]:
+    """Retrieve all data row IDs from the project and map them to filenames"""
+    try:
+        logging.info("Retrieving data row IDs from project...")
+        
+        client = lb.Client(api_key=LABELBOX_API_KEY)
+        
+        # Get all datasets in the project using GraphQL
+        project_with_datasets_query = f"""
+        {{
+          project(where: {{ id: "{LABELBOX_PROJECT_ID}" }}) {{
+            datasets {{
+              id
+              name
+            }}
+          }}
+        }}
+        """
+        
+        result = client.execute(project_with_datasets_query)
+        datasets = result.get("project", {}).get("datasets", [])
+        
+        if not datasets:
+            logging.error("No datasets found in the project")
+            return {}
+        
+        # Map to store filename -> data row ID
+        filename_to_id = {}
+        total_rows = 0
+        
+        # Process each dataset
+        for dataset in datasets:
+            dataset_id = dataset.get("id")
+            dataset_name = dataset.get("name")
+            logging.info(f"Processing dataset: {dataset_name}")
+            
+            # Get data rows from this dataset using pagination
+            skip = 0
+            page_size = 100
+            
+            while True:
+                try:
+                    # Use GraphQL to get data rows
+                    data_row_query = f"""
+                    {{
+                      dataset(where: {{ id: "{dataset_id}" }}) {{
+                        dataRows(skip: {skip}, first: {page_size}) {{
+                          id
+                          externalId
+                          rowData
+                        }}
+                      }}
+                    }}
+                    """
+                    
+                    data_row_result = client.execute(data_row_query)
+                    data_rows = data_row_result.get("dataset", {}).get("dataRows", [])
+                    
+                    if not data_rows:
+                        break
+                    
+                    # Process each data row
+                    for row in data_rows:
+                        row_id = row.get("id")
+                        external_id = row.get("externalId")
+                        row_data = row.get("rowData")
+                        
+                        # Map with external_id if available
+                        if external_id:
+                            filename_to_id[external_id] = row_id
+                        
+                        # Extract filename from row_data URL if it's a URL
+                        if isinstance(row_data, str) and row_data.startswith("http"):
+                            # Get filename from URL (last part of path)
+                            url_parts = row_data.split('?')[0].split('/')
+                            if url_parts:
+                                filename = url_parts[-1]
+                                if filename:
+                                    filename_to_id[filename] = row_id
+                                    
+                                    # Also store without extension
+                                    name_without_ext = Path(filename).stem
+                                    if name_without_ext:
+                                        filename_to_id[name_without_ext] = row_id
+                    
+                    # Update total count
+                    total_rows += len(data_rows)
+                    
+                    # If we got fewer rows than page_size, we've reached the end
+                    if len(data_rows) < page_size:
+                        break
+                    
+                    # Update skip for next page
+                    skip += page_size
+                    logging.info(f"Retrieved {total_rows} rows so far from dataset {dataset_name}")
+                        
+                except Exception as e:
+                    logging.error(f"Error retrieving data rows: {e}")
+                    break
+        
+        logging.info(f"Found {total_rows} data rows across all datasets")
+        logging.info(f"Created {len(filename_to_id)} filename mappings")
+        
+        # Show some examples of the mappings
+        sample_count = min(5, len(filename_to_id))
+        if sample_count > 0:
+            logging.info("Sample filename to data row ID mappings:")
+            samples = list(filename_to_id.items())[:sample_count]
+            for filename, row_id in samples:
+                logging.info(f"  • {filename} -> {row_id}")
+        
+        return filename_to_id
+        
+    except Exception as e:
+        logging.error(f"Failed to retrieve data row IDs: {e}")
+        return {}
+
+def test_annotation_creation() -> bool:
+    """Test creating a sample annotation and linking it to a data row"""
+    try:
+        logging.info("Testing annotation creation...")
+        
+        # Get data row IDs
+        data_row_ids = get_data_row_ids()
+        if not data_row_ids:
+            logging.error("No data row IDs found")
+            return False
+        
+        # Get first data row ID for testing
+        sample_filename = next(iter(data_row_ids.keys()))
+        sample_row_id = data_row_ids[sample_filename]
+        
+        logging.info(f"Creating test annotation for: {sample_filename} (ID: {sample_row_id})")
+        
+        # Since the Labelbox SDK version doesn't have lb.data.annotation_types,
+        # we'll just create a sample annotation in JSON format for testing
+        test_annotation = {
+            "uuid": str(uuid.uuid4()),
+            "dataRow": {
+                "id": sample_row_id
+            },
+            "annotations": [
+                {
+                    "uuid": str(uuid.uuid4()),
+                    "name": "Test-Building-No-Damage",
+                    "value": {
+                        "format": "polygon2d",
+                        "points": [
+                            [10, 10],
+                            [100, 10],
+                            [100, 100],
+                            [10, 100]
+                        ]
+                    }
+                }
+            ]
+        }
+        
+        logging.info("Test annotation structure created successfully")
+        logging.info("Note: Test annotation was not uploaded to Labelbox")
+        logging.info("Annotation creation test successful")
+        
+        return True
+    except Exception as e:
+        logging.error(f"Error creating test annotation: {e}")
         return False
 
 def main():
-    """Run all connectivity tests"""
-    print("\n=== Labelbox Connectivity Test ===\n")
+    """Main function"""
+    logging.info("Starting Labelbox connection tests")
     
-    internet_ok = check_internet_connectivity()
-    if not internet_ok:
-        logging.error("❌ No internet connection. Please check your network.")
+    # Test basic connection
+    if not test_connection():
+        logging.error("Failed to connect to Labelbox API")
         return 1
     
-    # Try API connectivity, but continue anyway
-    api_ok = check_labelbox_api()
-    if not api_ok:
-        logging.warning("⚠️ API check failed, but continuing with authentication test...")
-        # We'll continue anyway, as the auth test is more important
-    
-    auth_ok = check_labelbox_auth()
-    if not auth_ok:
+    # Test project access
+    if not test_project_access():
+        logging.error("Failed to access the specified project")
         return 1
     
-    project_ok = check_project_access()
-    if not project_ok:
+    # Test data row ID retrieval
+    data_row_ids = get_data_row_ids()
+    if not data_row_ids:
+        logging.error("Failed to retrieve data row IDs")
         return 1
     
-    print("\n=== All Tests Passed ===\n")
-    logging.info("✅ Your Labelbox connection is working correctly")
-    logging.info("You should be able to use labelbox_importer.py successfully")
+    # Test annotation creation
+    if not test_annotation_creation():
+        logging.error("Failed to create test annotation")
+        return 1
     
+    logging.info("All tests completed successfully!")
     return 0
 
 if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except KeyboardInterrupt:
-        logging.info("Test interrupted by user")
-        sys.exit(1)
-    except Exception as e:
-        logging.error(f"Unexpected error: {str(e)}")
-        logging.debug(traceback.format_exc())
-        sys.exit(1) 
+    sys.exit(main()) 

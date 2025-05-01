@@ -5,6 +5,7 @@ Check COCO annotations file
 
 import json
 import os
+import uuid
 from pathlib import Path
 
 # Load COCO file
@@ -34,82 +35,77 @@ print("\nCategories:")
 for cat in data["categories"]:
     print(f"ID: {cat['id']}, Name: {cat['name']}")
 
-# Check annotations for first 5 files
-first_5_filenames = ["0000000.png", "0000001.png", "0000002.png", "0000003.png", "0000004.png"]
-print("\nChecking for annotations for first 5 files:")
+# Find images that have annotations
+print("\nFinding images with annotations...")
+image_to_annotations = {}
+id_to_filename = {img["id"]: img["file_name"] for img in data["images"]}
 
-# Build file_name to ID mapping
-filename_to_id = {img["file_name"]: img["id"] for img in data["images"]}
+for ann in data["annotations"]:
+    image_id = ann["image_id"]
+    if image_id in id_to_filename:
+        filename = id_to_filename[image_id]
+        if filename not in image_to_annotations:
+            image_to_annotations[filename] = []
+        image_to_annotations[filename].append(ann)
 
-for filename in first_5_filenames:
-    if filename in filename_to_id:
-        image_id = filename_to_id[filename]
-        annotations = [ann for ann in data["annotations"] if ann["image_id"] == image_id]
-        print(f"File {filename} (ID: {image_id}) has {len(annotations)} annotations")
-    else:
-        print(f"File {filename} not found in COCO file")
+print(f"Found {len(image_to_annotations)} images with annotations")
 
-# Hardcoded Labelbox IDs based on check_labelbox.py output
-labelbox_ids = {
-    "0000000.png": "cma2wb55mw6vh0773ggg252nr",
-    "0000001.png": "cma2wb55qw6vi0773y07qh8c0",
-    "0000002.png": "cma2wb55gw6vg0773ma3441wh",
-    "0000003.png": "cma2wb55ww6vk0773tiwu8vp7",
-    "0000004.png": "cma2wb55tw6vj07736oxg9mxa"
-}
+# Select up to 5 images with annotations for testing
+test_filenames = list(image_to_annotations.keys())[:5]
+print("\nTesting with these images:")
+for filename in test_filenames:
+    image_id = next(img["id"] for img in data["images"] if img["file_name"] == filename)
+    print(f"File {filename} (ID: {image_id}) has {len(image_to_annotations[filename])} annotations")
 
 # Create NDJSON import file for testing
 print("\nCreating test import file")
 annotations_list = []
 
-for filename, labelbox_id in labelbox_ids.items():
-    if filename in filename_to_id:
-        image_id = filename_to_id[filename]
-        image_annotations = []
+for filename in test_filenames:
+    # Use the filename as the globalKey
+    global_key = filename
+    print(f"Using global key: {global_key}")
+    
+    # Get annotations for this image
+    for ann in image_to_annotations[filename]:
+        # Get category
+        cat_id = ann["category_id"]
+        cat_name = next((c["name"] for c in data["categories"] if c["id"] == cat_id), None)
         
-        # Get annotations for this image
-        for ann in data["annotations"]:
-            if ann["image_id"] == image_id:
-                # Get category
-                cat_id = ann["category_id"]
-                cat_name = next((c["name"] for c in data["categories"] if c["id"] == cat_id), None)
-                
-                if not cat_name:
-                    continue
-                
-                # Get segmentation
-                if "segmentation" not in ann or not ann["segmentation"] or not ann["segmentation"][0]:
-                    continue
-                
-                # Convert segmentation to points
-                points = []
-                for i in range(0, len(ann["segmentation"][0]), 2):
-                    if i + 1 < len(ann["segmentation"][0]):
-                        x = ann["segmentation"][0][i]
-                        y = ann["segmentation"][0][i+1]
-                        points.append([x, y])
-                
-                if points:
-                    # Add annotation
-                    image_annotations.append({
-                        "uuid": str(ann["id"]),
-                        "name": cat_name,
-                        "value": {
-                            "format": "polygon2d",
-                            "points": points
-                        }
-                    })
+        if not cat_name:
+            continue
         
-        if image_annotations:
-            # Add entry for this image
+        # Get segmentation
+        if "segmentation" not in ann or not ann["segmentation"] or not ann["segmentation"][0]:
+            continue
+        
+        # Convert segmentation to points
+        points = []
+        for i in range(0, len(ann["segmentation"][0]), 2):
+            if i + 1 < len(ann["segmentation"][0]):
+                x = ann["segmentation"][0][i]
+                y = ann["segmentation"][0][i+1]
+                points.append({"x": x, "y": y})
+        
+        # Ensure polygon is closed (first point == last point)
+        if points and (points[0]["x"] != points[-1]["x"] or points[0]["y"] != points[-1]["y"]):
+            points.append({"x": points[0]["x"], "y": points[0]["y"]})
+        
+        if points:
+            # Create a valid UUID for each annotation
+            annotation_uuid = str(uuid.uuid4())
+            
+            # Add annotation directly (don't use 'annotations' array)
             annotations_list.append({
-                "uuid": f"test_{filename}",
+                "uuid": annotation_uuid,
+                "name": cat_name,
+                "polygon": points,
+                "classifications": [],
                 "dataRow": {
-                    "id": labelbox_id
-                },
-                "annotations": image_annotations
+                    "globalKey": global_key
+                }
             })
-            print(f"Added {len(image_annotations)} annotations for {filename}")
+            print(f"Added annotation for {filename} (Category: {cat_name})")
 
 # Save test file
 test_file = Path("outputs/predictions/test_annotations.ndjson")
@@ -117,5 +113,5 @@ with open(test_file, "w") as f:
     for ann in annotations_list:
         f.write(json.dumps(ann) + "\n")
 
-print(f"Saved test file with {len(annotations_list)} images to {test_file}")
+print(f"Saved test file with {len(annotations_list)} annotations to {test_file}")
 print(f"You can now import this file using the labelbox_importer.py script") 

@@ -41,16 +41,38 @@ def main():
     logging.info("Fetching existing images in the project...")
     data_rows = []
     
-    # Use the SDK to get data rows from all datasets in the project
-    for dataset in project.datasets():
-        logging.info(f"Processing dataset: {dataset.name}")
-        try:
-            # Get all data rows in this dataset
-            for page in dataset.data_rows().iter_pages():
-                data_rows.extend(page)
-                logging.info(f"Retrieved {len(page)} data rows")
-        except Exception as e:
-            logging.error(f"Error retrieving data rows from dataset {dataset.name}: {e}")
+    # Use GraphQL to get datasets from project
+    datasets_query = f"""
+    {{
+        project(where: {{ id: "{LABELBOX_PROJECT_ID}" }}) {{
+            datasets {{
+                id
+                name
+            }}
+        }}
+    }}
+    """
+    result = client.execute(datasets_query)
+    
+    try:
+        for dataset_info in result["project"]["datasets"]:
+            dataset_id = dataset_info["id"]
+            dataset_name = dataset_info["name"]
+            logging.info(f"Processing dataset: {dataset_name}")
+            
+            dataset = client.get_dataset(dataset_id)
+            try:
+                # Get all data rows in this dataset
+                for batch in dataset.data_rows().iter_pages():
+                    data_rows.extend(batch)
+                    logging.info(f"Retrieved {len(batch)} data rows")
+            except Exception as e:
+                logging.error(f"Error retrieving data rows from dataset {dataset_name}: {e}")
+    except (KeyError, Exception) as e:
+        logging.error(f"Error processing datasets: {e}")
+        if 'result' in locals():
+            logging.error(f"API response: {result}")
+        return
     
     logging.info(f"Found total of {len(data_rows)} data rows in the project")
     
