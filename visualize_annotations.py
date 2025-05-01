@@ -12,8 +12,13 @@ from datetime import datetime
 sys.path.append(str(Path(__file__).parent))
 from config import *
 
-def draw_polygon(image, points, color, label=None, thickness=2):
-    """Draw a polygon on an image"""
+def draw_polygon(image, points, color, label=None, thickness=2, scale_factor=1):
+    """Draw a polygon on an image with optional scaling"""
+    if scale_factor != 1:
+        # Scale the points from their original coordinates
+        h, w = image.shape[:2]
+        points = [(int(x * scale_factor), int(y * scale_factor)) for x, y in points]
+    
     # Convert points to numpy array
     pts = np.array(points).reshape((-1, 2)).astype(np.int32)
     
@@ -52,9 +57,33 @@ def draw_polygon(image, points, color, label=None, thickness=2):
             cv2.LINE_AA
         )
 
+def draw_annotation_border(image, points, width=30, color=(0, 0, 255)):
+    """Draw a border around the entire annotation area to make it visible"""
+    if not points:
+        return
+    
+    # Get the bounds
+    points_array = np.array(points).reshape(-1, 2)
+    min_x, min_y = points_array.min(axis=0)
+    max_x, max_y = points_array.max(axis=0)
+    
+    # Add padding
+    min_x = max(0, min_x - width)
+    min_y = max(0, min_y - width)
+    max_x = min(image.shape[1]-1, max_x + width)
+    max_y = min(image.shape[0]-1, max_y + width)
+    
+    # Draw rectangle
+    cv2.rectangle(image, (int(min_x), int(min_y)), (int(max_x), int(max_y)), color, 2)
+    
+    # Add circle at center
+    center_x = int((min_x + max_x) / 2)
+    center_y = int((min_y + max_y) / 2)
+    cv2.circle(image, (center_x, center_y), 10, color, -1)
+
 def main(args):
     # Create output directory for saving images
-    output_dir = PREDICTIONS_DIR / f"visualized_annotations_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    output_dir = PREDICTIONS_DIR / f"visualized_annotations_fixed_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     output_dir.mkdir(exist_ok=True)
     print(f"Will save annotated images to: {output_dir}")
     
@@ -121,6 +150,10 @@ def main(args):
         "Building-Total-Destruction": (255, 0, 0) # Blue
     }
     
+    # Get scaling factor from arguments
+    scale_factor = args.scale
+    highlight_border = args.highlight_border
+    
     # Count statistics for processed images
     images_with_annotations = 0
     images_without_annotations = 0
@@ -158,6 +191,10 @@ def main(args):
             print(f"Failed to load image: {image_path}")
             continue
         
+        # Create an additional image with only annotations
+        if args.show_annotation_only:
+            annotation_only = np.zeros_like(image)
+        
         # Draw all annotations
         annotations = annotations_by_image.get(image_id, [])
         
@@ -180,9 +217,30 @@ def main(args):
                     points = [(segmentation[i], segmentation[i+1]) 
                              for i in range(0, len(segmentation), 2)]
                     
-                    draw_polygon(image, points, color, 
-                               f"{category_name} ({anno.get('score', 1.0):.2f})",
-                               thickness=2)
+                    # Add visualization of the annotation location
+                    if highlight_border:
+                        draw_annotation_border(image, points, width=50, color=(0, 0, 255))
+                    
+                    # Draw on main image
+                    draw_polygon(
+                        image, 
+                        points, 
+                        color, 
+                        f"{category_name} ({anno.get('score', 1.0):.2f})",
+                        thickness=3,
+                        scale_factor=scale_factor
+                    )
+                    
+                    # Draw on annotation-only image if requested
+                    if args.show_annotation_only:
+                        draw_polygon(
+                            annotation_only, 
+                            points, 
+                            color, 
+                            f"{category_name} ({anno.get('score', 1.0):.2f})",
+                            thickness=3,
+                            scale_factor=scale_factor
+                        )
         else:
             images_without_annotations += 1
             # Add text to indicate no annotations
@@ -198,12 +256,30 @@ def main(args):
             )
             print(f"Image {image_id} ({image_path.name}) has no annotations")
         
-        # Save image with annotations
+        # Add text to indicate the image ID and scaling
+        cv2.putText(
+            image,
+            f"Image ID: {image_id}, Scale: {scale_factor}x",
+            (50, image.shape[0] - 50),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA
+        )
+        
+        # Save images
         annotation_status = "with_annotations" if has_annotations else "no_annotations"
         image_name = f"{img_idx+1:04d}_{Path(image_path).stem}_{annotation_status}.jpg"
         output_path = output_dir / image_name
         cv2.imwrite(str(output_path), image)
         print(f"Saved image {img_idx+1}/{len(image_ids)}: {output_path}")
+        
+        # Save annotation-only image if requested
+        if args.show_annotation_only and has_annotations:
+            anno_image_name = f"{img_idx+1:04d}_{Path(image_path).stem}_annotations_only.jpg"
+            anno_output_path = output_dir / anno_image_name
+            cv2.imwrite(str(anno_output_path), annotation_only)
     
     print(f"Finished visualizing {len(image_ids)} images")
     print(f"Images with annotations: {images_with_annotations}")
@@ -211,7 +287,7 @@ def main(args):
     print(f"All images saved to: {output_dir}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Visualize COCO annotations")
+    parser = argparse.ArgumentParser(description="Visualize COCO annotations with scaling options")
     parser.add_argument('--image-id', type=str, help='Specific image ID to visualize')
     parser.add_argument('--video', type=str, help='Visualize images from a specific video')
     parser.add_argument('--random', action='store_true', help='Randomize image order')
@@ -219,6 +295,9 @@ if __name__ == "__main__":
     parser.add_argument('--output-dir', type=str, help='Custom directory to save annotated images')
     parser.add_argument('--only-with-annotations', action='store_true', help='Only process images that have annotations')
     parser.add_argument('--prioritize-annotations', action='store_true', help='Process images with annotations first')
+    parser.add_argument('--scale', type=float, default=1.0, help='Scale factor for annotations (default: 1.0)')
+    parser.add_argument('--highlight-border', action='store_true', help='Add border around annotation area')
+    parser.add_argument('--show-annotation-only', action='store_true', help='Generate additional image with only annotations')
     args = parser.parse_args()
     
     # Use custom output directory if provided

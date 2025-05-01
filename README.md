@@ -1,6 +1,8 @@
-# Building Damage Assessment Pipeline
+# Building Damage Assessment Pipeline (Consolidated)
 
 A comprehensive pipeline for detecting and classifying building damage in aerial imagery using Mask2Former. This pipeline handles the complete workflow from training through inference to annotation upload.
+
+> **Note:** This codebase has been consolidated to remove redundant files and improve organization. Unused files have been moved to the `archived/` directory.
 
 ## Overview
 
@@ -66,7 +68,7 @@ LABELBOX_PROJECT_ID=your_actual_project_id
 
 Alternatively, use the provided setup script for an interactive setup:
 ```bash
-./setup_env.sh
+./scripts/setup_env.sh
 ```
 
 You can also set these environment variables directly in your shell:
@@ -77,7 +79,7 @@ export LABELBOX_PROJECT_ID="your_project_id"
 
 For detailed security guidelines on handling credentials, see [Security Documentation](docs/security.md).
 
-## Directory Structure
+## Directory Structure (Consolidated)
 
 ```
 dataset_pipeline/
@@ -86,25 +88,24 @@ dataset_pipeline/
 ├── inference.py                # Inference script
 ├── export_to_coco.py           # Convert predictions to COCO format
 ├── labelbox_importer.py        # Unified Labelbox import functionality
-├── visualize_annotations.py    # Basic visualization of annotations
-├── fix_visualize_annotations.py # Enhanced visualization with scaling
+├── visualize_annotations.py    # Enhanced visualization with scaling
 ├── analyze_predictions.py      # Analysis of prediction statistics
-├── cleanup.py                  # Utility to clean up old model checkpoints
+├── upload_images_to_labelbox.py # For uploading images to Labelbox
 ├── utils/                      # Helper functions
-│   └── dataset.py              # Dataset utilities
+│   ├── dataset.py              # Dataset utilities
+│   └── logging_utils.py        # Logging utilities
+├── scripts/                    # Utility scripts
+│   └── cleanup.py              # Utility to clean up old model checkpoints
+├── examples/                   # Example files and documentation
+├── tests/                      # Unit tests
+│   ├── test_dataset.py         # Tests for dataset utilities
+│   └── test_logging_utils.py   # Tests for logging utilities
+├── cloud_setup/                # Cloud storage configuration
 ├── outputs/                    # Generated during runtime
 │   ├── models/                 # Saved model checkpoints
 │   ├── predictions/            # Model predictions
 │   └── logs/                   # Training and inference logs
-├── docs/                       # Documentation
-│   └── security.md             # Security guidelines
-├── tests/                      # Unit tests
-├── examples/                   # Example workflows and notebooks
-├── .github/workflows/          # CI/CD configurations
-│   └── security-checks.yml     # Security scan workflows
-├── .secrets.baseline           # Baseline for secret detection
-├── setup_env.sh                # Environment setup script
-├── .env.example                # Template for environment variables
+├── archived/                   # Archived old files (can be deleted if not needed)
 └── requirements.txt            # Python dependencies
 ```
 
@@ -146,11 +147,8 @@ This creates `outputs/predictions/predictions_coco.json` with standardized annot
 View the predictions with annotations:
 
 ```bash
-# Basic visualization
-python visualize_annotations.py --only-with-annotations
-
 # Enhanced visualization with scaled annotations
-python fix_visualize_annotations.py --only-with-annotations --scale 10 --highlight-border
+python visualize_annotations.py --only-with-annotations --scale 10 --highlight-border
 ```
 
 ### Step 6: Analyze Prediction Quality
@@ -190,7 +188,7 @@ python labelbox_importer.py --source predictions
 python labelbox_importer.py
 ```
 
-**New Chunked Uploading Options**:
+**Chunked Uploading Options**:
 
 For more reliable uploading, especially with large datasets:
 
@@ -224,13 +222,13 @@ Manage disk space by removing old checkpoints:
 
 ```bash
 # Keep only the latest checkpoint
-python cleanup.py
+python scripts/cleanup.py
 
 # Keep the 3 most recent checkpoints
-python cleanup.py --keep 3
+python scripts/cleanup.py --keep 3
 
 # Preview what would be deleted without deleting
-python cleanup.py --dry-run
+python scripts/cleanup.py --dry-run
 ```
 
 ## Script Details
@@ -266,12 +264,6 @@ Converts model predictions to COCO format:
 - Error handling for invalid masks
 
 ### `visualize_annotations.py`
-Basic visualization of annotations:
-- Renders predictions on original images
-- Supports filtering by video or image ID
-- Option to show only annotated images
-
-### `fix_visualize_annotations.py`
 Enhanced visualization with additional features:
 - Scaling option for small annotations
 - Border highlighting around annotation regions
@@ -292,13 +284,6 @@ Unified Labelbox import with:
 - Debug mode with upload limits
 - Error handling and recovery
 - Progress monitoring
-
-### `cleanup.py`
-Utility for managing disk space:
-- Removes old model checkpoint files
-- Keeps specified number of recent files
-- Provides disk space usage statistics
-- Supports dry-run mode for preview
 
 ## Security Features
 
@@ -339,7 +324,7 @@ All scripts support debug mode to limit processing and provide additional loggin
 
 4. **Visualization Debug**:
    ```bash
-   python fix_visualize_annotations.py --debug --limit 3
+   python visualize_annotations.py --debug --limit 3
    ```
    Processes only 3 images with extra annotation information.
 
@@ -418,7 +403,7 @@ For faster processing:
 - Set `BATCH_SIZE_PER_GPU` higher for more efficient training
 
 ### Disk Space Management
-- Use `cleanup.py` to manage model checkpoint files
+- Use `scripts/cleanup.py` to manage model checkpoint files
 - Set a reasonable `--keep` value based on your storage constraints
 
 ## Contributing
@@ -440,4 +425,12 @@ When contributing, ensure:
 
 ## Contact
 
-[Add Contact Information] 
+[Add Contact Information]
+
+## Notes on Code Consolidation
+
+- The `archived/` directory contains old versions and redundant files that were part of the original codebase.
+- Shell scripts have been moved to the `scripts/` directory.
+- Test and example files have been organized into appropriate directories.
+- The visualization functionality was consolidated from multiple files into a single enhanced version.
+- Redundant Labelbox importers were consolidated into a single `labelbox_importer.py` file with all functionality.
